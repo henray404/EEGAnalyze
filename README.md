@@ -14,7 +14,7 @@ Aplikasi web untuk analisis sinyal EEG dengan fokus pada deteksi pola ALS vs Nor
 ```
 web_v2/
 ├── backend/         FastAPI service (Python)
-├── frontend/        React UI (no bundler, Babel standalone)
+├── frontend_v2/     React UI (no bundler, Babel standalone)
 └── docs/            Spec, design, dan bug log
 ```
 
@@ -38,7 +38,7 @@ API tersedia di `http://localhost:8000`. Swagger docs di `http://localhost:8000/
 ## Setup Frontend
 
 ```powershell
-cd frontend
+cd frontend_v2
 python -m http.server 5173
 ```
 
