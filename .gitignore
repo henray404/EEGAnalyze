@@ -1,0 +1,60 @@
+# Internal project context, not for public repo
+CLAUDE.md
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Frontend
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+.parcel-cache/
+.next/
+.cache/
+.vite/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+launcher.log
+
+# Local data
+*.edf
+*.zip
+data/
+uploads/
+tmp/
+temp/
+
+
+frontend/

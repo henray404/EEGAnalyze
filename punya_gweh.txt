@@ -1,0 +1,8 @@
+  To run:
+  # Backend
+  cd backend; .\.venv\Scripts\Activate.ps1
+  uvicorn app.main:app --reload --port 8000
+
+  # Frontend (separate terminal)
+  cd frontend_v2; python -m http.server 5173
+  # Open http://localhost:5173

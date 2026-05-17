@@ -1,0 +1,620 @@
+﻿"""
+Modul features â€” Ekstraksi fitur EEG per channel/subband.
+
+Fitur baru dari pipeline EEG-ALS- (03_extract_features.py):
+- Band power (absolute)
+- Relative power (% terhadap total)
+- Peak frequency
+- Rasio antar subband (alpha/beta, theta/alpha, delta/theta)
+"""
+
+import numpy as np
+import pandas as pd
+from scipy.signal import butter, filtfilt
+
+from app.config import DEFAULT_SUBBANDS, DEFAULT_FEATURES, BAND_RATIOS
+from app.processing.psd import PSDAnalyzer
+
+
+def _bandpass_array(data, sfreq, low, high, order=5):
+    """Bandpass filter pada array numpy 1-D."""
+    nyq = 0.5 * sfreq
+    low_n = max(low / nyq, 0.001)
+    high_n = min(high / nyq, 0.999)
+    b, a = butter(order, [low_n, high_n], btype="band")
+    return filtfilt(b, a, data)
+
+
+class EEGFeatures:
+    """Kumpulan metode untuk ekstraksi fitur EEG."""
+
+    # ------------------------------------------------------------------ #
+    #  Band power (BARU â€“ dari pipeline)                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_band_power(signal, sfreq, low, high):
+        """Hitung band power absolut menggunakan FFT.
+
+        Dari pipeline EEG-ALS-/03_extract_features.py.
+
+        Parameters
+        ----------
+        signal : np.ndarray
+            Sinyal 1-D.
+        sfreq : float
+            Sampling frequency.
+        low, high : float
+            Batas frekuensi subband.
+
+        Returns
+        -------
+        float  Absolute band power (ÂµVÂ²/Hz).
+        """
+        n = len(signal)
+        if n < 4:
+            return 0.0
+        fft_vals = np.fft.rfft(signal)
+        power_spectrum = (np.abs(fft_vals) ** 2) / n
+        freqs = np.fft.rfftfreq(n, d=1.0 / sfreq)
+        band_mask = (freqs >= low) & (freqs <= high)
+        return float(np.mean(power_spectrum[band_mask])) if band_mask.any() else 0.0
+
+    @staticmethod
+    def compute_relative_power(signal, sfreq, low, high):
+        """Hitung relative power (% total power).
+
+        Dari pipeline EEG-ALS-/03_extract_features.py.
+
+        Returns
+        -------
+        float  Relative power (0â€“1).
+        """
+        n = len(signal)
+        if n < 4:
+            return 0.0
+        fft_vals = np.fft.rfft(signal)
+        power_spectrum = (np.abs(fft_vals) ** 2) / n
+        freqs = np.fft.rfftfreq(n, d=1.0 / sfreq)
+        band_mask = (freqs >= low) & (freqs <= high)
+
+        total_power = np.sum(power_spectrum)
+        if total_power == 0:
+            return 0.0
+        band_power = np.sum(power_spectrum[band_mask])
+        return float(band_power / total_power)
+
+    @staticmethod
+    def compute_peak_frequency(signal, sfreq, low, high):
+        """Hitung peak frequency dalam subband.
+
+        Dari pipeline EEG-ALS-/03_extract_features.py.
+
+        Returns
+        -------
+        float  Frekuensi puncak (Hz) dalam subband.
+        """
+        n = len(signal)
+        if n < 4:
+            return 0.0
+        fft_vals = np.fft.rfft(signal)
+        power_spectrum = np.abs(fft_vals) ** 2
+        freqs = np.fft.rfftfreq(n, d=1.0 / sfreq)
+        band_mask = (freqs >= low) & (freqs <= high)
+
+        if not band_mask.any():
+            return 0.0
+        band_power = power_spectrum[band_mask]
+        band_freqs = freqs[band_mask]
+        return float(band_freqs[np.argmax(band_power)])
+
+    # ------------------------------------------------------------------ #
+    #  Fitur per subband                                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_subband_features(df, channels, sfreq, subbands=None,
+                                  features=None, include_frequency=True,
+                                  psd_method="welch", psd_fmin=0.0,
+                                  psd_fmax=49.0, psd_n_fft=None):
+        """Hitung fitur per channel per subband.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame sinyal (kolom per channel).
+        channels : list[str]
+            Nama channel.
+        sfreq : float
+            Sampling frequency.
+        subbands : dict | None
+            Subband: {"Delta": (0.5, 4), ...}. Default dari config.
+        features : list[str] | None
+            Fitur time-domain: ["mav", "variance", "std", "rms"].
+        include_frequency : bool
+            Jika True, hitung band_power, relative_power, peak_frequency
+            menggunakan PSD (Welch/Multitaper).
+        psd_method : str
+            Metode PSD: 'welch' atau 'multitaper'.
+        psd_fmin, psd_fmax : float
+            Rentang frekuensi PSD.
+        psd_n_fft : int | None
+            Panjang FFT untuk PSD. None = auto.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: channel, subband, + fitur.
+        """
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+        if features is None:
+            features = DEFAULT_FEATURES
+
+        # --- Pre-compute PSD-based band power jika include_frequency ---
+        psd_bp_map = {}  # (channel, subband) -> {band_power, relative_power, peak_frequency}
+        if include_frequency:
+            ch_list = [ch for ch in channels if ch in df.columns]
+            if ch_list and len(df) >= 8:
+                data = df[ch_list].values.T  # (n_channels, n_samples)
+                psds, freqs = PSDAnalyzer.compute_psd_array(
+                    data, sfreq, method=psd_method,
+                    fmin=psd_fmin, fmax=psd_fmax, n_fft=psd_n_fft,
+                )
+                bp_df = PSDAnalyzer.compute_band_power_from_psd(
+                    psds, freqs, ch_list, subbands,
+                )
+                for _, row in bp_df.iterrows():
+                    psd_bp_map[(row["channel"], row["subband"])] = {
+                        "band_power": row["band_power"],
+                        "relative_power": row["relative_power"],
+                        "peak_frequency": row["peak_frequency"],
+                    }
+
+        rows = []
+
+        for ch in channels:
+            if ch not in df.columns:
+                continue
+            signal = df[ch].values
+
+            for sb_name, (low, high) in subbands.items():
+                filtered = _bandpass_array(signal, sfreq, low, high)
+                row = {"channel": ch, "subband": sb_name}
+
+                # --- Time-domain features ---
+                for feat in features:
+                    if feat == "mav":
+                        row[feat] = float(np.mean(np.abs(filtered)))
+                    elif feat == "variance":
+                        row[feat] = float(np.var(filtered))
+                    elif feat == "std":
+                        row[feat] = float(np.std(filtered))
+
+                # --- Frequency-domain features via PSD ---
+                if include_frequency:
+                    bp = psd_bp_map.get((ch, sb_name), {})
+                    row["band_power"] = bp.get("band_power", 0.0)
+                    row["relative_power"] = bp.get("relative_power", 0.0)
+                    row["peak_frequency"] = bp.get("peak_frequency", 0.0)
+
+                rows.append(row)
+
+        return pd.DataFrame(rows)
+
+    # ------------------------------------------------------------------ #
+    #  Fitur per task                                                     #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_task_features(loader, df, channels, tasks, subbands=None,
+                               features=None, include_frequency=True,
+                               psd_method="welch", psd_fmin=0.0,
+                               psd_fmax=49.0, psd_n_fft=None):
+        """Hitung fitur per task per channel per subband.
+
+        Parameters
+        ----------
+        loader : EEGLoader
+            Loader instance (untuk extract_task_segments).
+        df : pd.DataFrame
+        channels : list[str]
+        tasks : list[str]
+        subbands, features : lihat compute_subband_features.
+        include_frequency : bool
+        psd_method, psd_fmin, psd_fmax, psd_n_fft : parameter PSD.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, + fitur.
+        """
+        all_rows = []
+        for task in tasks:
+            seg = loader.extract_task_segments(df, task)
+            if seg.empty:
+                continue
+            feat_df = EEGFeatures.compute_subband_features(
+                seg, channels, loader.sfreq, subbands, features,
+                include_frequency=include_frequency,
+                psd_method=psd_method, psd_fmin=psd_fmin,
+                psd_fmax=psd_fmax, psd_n_fft=psd_n_fft,
+            )
+            feat_df.insert(0, "task", task)
+            all_rows.append(feat_df)
+
+        if all_rows:
+            return pd.concat(all_rows, ignore_index=True)
+        return pd.DataFrame()
+
+    # ------------------------------------------------------------------ #
+    #  Fitur per occurrence (BARU)                                         #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_occurrence_features(loader, df, channels, tasks,
+                                     subbands=None, features=None,
+                                     include_frequency=True,
+                                     psd_method="welch", psd_fmin=0.0,
+                                     psd_fmax=49.0, psd_n_fft=None):
+        """Hitung fitur per occurrence per task per channel per subband.
+
+        Setiap occurrence diberi label task_occ (misal 'Resting_1').
+
+        Parameters
+        ----------
+        loader : EEGLoader
+        df : pd.DataFrame
+        channels, tasks, subbands, features, include_frequency: sama.
+        psd_method, psd_fmin, psd_fmax, psd_n_fft : parameter PSD.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, occurrence, task_occ, channel, subband, + fitur.
+        """
+        occurrences = loader.get_task_occurrences()
+        if not occurrences:
+            return pd.DataFrame()
+
+        all_rows = []
+        for occ in occurrences:
+            task_name = occ["task"]
+            occ_num = occ["occurrence"]
+
+            if task_name not in tasks:
+                continue
+
+            seg = loader.extract_occurrence_segment(df, task_name, occ_num)
+            if seg.empty or len(seg) < 4:
+                continue
+
+            feat_df = EEGFeatures.compute_subband_features(
+                seg, channels, loader.sfreq, subbands, features,
+                include_frequency=include_frequency,
+                psd_method=psd_method, psd_fmin=psd_fmin,
+                psd_fmax=psd_fmax, psd_n_fft=psd_n_fft,
+            )
+            if feat_df.empty:
+                continue
+
+            feat_df.insert(0, "task", task_name)
+            feat_df.insert(1, "occurrence", occ_num)
+            feat_df.insert(2, "task_occ", f"{task_name}_{occ_num}")
+            all_rows.append(feat_df)
+
+        if all_rows:
+            return pd.concat(all_rows, ignore_index=True)
+        return pd.DataFrame()
+
+    @staticmethod
+    def compute_aggregated_occurrence_features(loader, df, channels, tasks,
+                                                subbands=None, features=None,
+                                                include_frequency=True,
+                                                psd_method="welch",
+                                                psd_fmin=0.0, psd_fmax=49.0,
+                                                psd_n_fft=None):
+        """Hitung fitur dengan rata-rata semua occurrence per task.
+
+        Untuk setiap task: hitung fitur per occurrence dulu, lalu
+        rata-rata hasilnya.  Dibandingkan dengan compute_task_features
+        yang menggabungkan semua sample jadi satu segmen besar.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, + fitur (mean dari occurrences).
+        """
+        occ_df = EEGFeatures.compute_occurrence_features(
+            loader, df, channels, tasks, subbands, features,
+            include_frequency=include_frequency,
+            psd_method=psd_method, psd_fmin=psd_fmin,
+            psd_fmax=psd_fmax, psd_n_fft=psd_n_fft,
+        )
+        if occ_df.empty:
+            return pd.DataFrame()
+
+        # Group by task + channel + subband, ambil mean dari semua occurrence
+        group_cols = ["task", "channel", "subband"]
+        meta_cols = {"task", "occurrence", "task_occ", "channel", "subband"}
+        feat_cols = [c for c in occ_df.columns if c not in meta_cols]
+
+        agg = occ_df.groupby(group_cols, as_index=False)[feat_cols].mean()
+        return agg
+
+    # ------------------------------------------------------------------ #
+    #  First occurrence only (BARU)                                        #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_first_occurrence_features(loader, df, channels, tasks,
+                                          subbands=None, features=None,
+                                          include_frequency=True,
+                                          psd_method="welch", psd_fmin=0.0,
+                                          psd_fmax=49.0, psd_n_fft=None):
+        """Hitung fitur hanya dari occurrence pertama tiap task.
+
+        Occurrence pertama dianggap lebih 'murni' karena subjek belum
+        terpengaruh repetisi.
+
+        Parameters
+        ----------
+        loader : EEGLoader
+        df : pd.DataFrame
+        channels, tasks, subbands, features, include_frequency: sama.
+        psd_method, psd_fmin, psd_fmax, psd_n_fft : parameter PSD.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, + fitur.
+        """
+        occurrences = loader.get_task_occurrences()
+        if not occurrences:
+            # Fallback ke compute_task_features jika tidak ada occurrence info
+            return EEGFeatures.compute_task_features(
+                loader, df, channels, tasks, subbands, features,
+                include_frequency=include_frequency,
+                psd_method=psd_method, psd_fmin=psd_fmin,
+                psd_fmax=psd_fmax, psd_n_fft=psd_n_fft,
+            )
+
+        # Ambil hanya occurrence pertama per task yang valid
+        task_occ_map = {}
+        for occ in occurrences:
+            t = occ["task"]
+            if t not in task_occ_map:
+                task_occ_map[t] = []
+            task_occ_map[t].append(occ["occurrence"])
+
+        all_rows = []
+        for task_name in tasks:
+            if task_name not in task_occ_map:
+                continue
+
+            for occ_num in task_occ_map[task_name]:
+                seg = loader.extract_occurrence_segment(df, task_name, occ_num)
+                if seg.empty or len(seg) < min(100, loader.sfreq * 0.5):
+                    continue
+
+                feat_df = EEGFeatures.compute_subband_features(
+                    seg, channels, loader.sfreq, subbands, features,
+                    include_frequency=include_frequency,
+                    psd_method=psd_method, psd_fmin=psd_fmin,
+                    psd_fmax=psd_fmax, psd_n_fft=psd_n_fft,
+                )
+
+                if not feat_df.empty:
+                    feat_df.insert(0, "task", task_name)
+                    all_rows.append(feat_df)
+                    break
+
+        if all_rows:
+            return pd.concat(all_rows, ignore_index=True)
+        return pd.DataFrame()
+
+    # ------------------------------------------------------------------ #
+    #  ERD/ERS (Event-Related De/Synchronization)                          #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def compute_erd_ers(batch_df, baseline_task="Resting",
+                        feature_col="mav"):
+        """Hitung ERD/ERS relatif terhadap baseline task.
+
+        ERD/ERS = ((Power_Task - Power_Baseline) / Power_Baseline) Ã— 100%
+
+        Negatif = ERD (desynchronization), Positif = ERS (synchronization).
+
+        Parameters
+        ----------
+        batch_df : pd.DataFrame
+            Hasil batch processing (kolom: task, channel, subband, filename, + fitur).
+        baseline_task : str
+            Task baseline (default: 'Resting').
+        feature_col : str
+            Kolom fitur yang digunakan untuk perhitungan (default: 'mav').
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: filename, task, channel, subband,
+                       baseline_value, task_value, erd_ers_pct.
+        """
+        if feature_col not in batch_df.columns:
+            return pd.DataFrame()
+
+        baseline = batch_df[batch_df["task"] == baseline_task].copy()
+        tasks_other = batch_df[batch_df["task"] != baseline_task].copy()
+
+        if baseline.empty or tasks_other.empty:
+            return pd.DataFrame()
+
+        merge_keys = ["filename", "channel", "subband"]
+        # Hanya gunakan kolom yang ada
+        merge_keys = [k for k in merge_keys if k in baseline.columns]
+
+        merged = pd.merge(
+            tasks_other[merge_keys + ["task", feature_col]],
+            baseline[merge_keys + [feature_col]],
+            on=merge_keys, suffixes=("_task", "_baseline"),
+        )
+
+        if merged.empty:
+            return pd.DataFrame()
+
+        col_task = f"{feature_col}_task"
+        col_base = f"{feature_col}_baseline"
+
+        result = merged[merge_keys + ["task"]].copy()
+        result["baseline_value"] = merged[col_base]
+        result["task_value"] = merged[col_task]
+
+        # ERD/ERS = ((task - baseline) / baseline) Ã— 100
+        result["erd_ers_pct"] = np.where(
+            merged[col_base] != 0,
+            ((merged[col_task] - merged[col_base]) / merged[col_base]) * 100.0,
+            0.0,
+        )
+
+        return result
+
+    @staticmethod
+    def compute_erd_ers_paired(loader, df, channels, task_name,
+                                subbands=None, baseline_task="Resting"):
+        """Hitung ERD/ERS menggunakan pasangan Restingâ†’Task yang berurutan.
+
+        Mencari occurrence Resting yang langsung diikuti oleh task_name
+        dalam urutan temporal annotations.  Hanya menggunakan pasangan
+        pertama yang valid (1 Resting + 1 Task).
+
+        ERD/ERS = ((Power_Task - Power_Baseline) / Power_Baseline) Ã— 100%
+
+        Hanya menghitung dari **band power** (bukan fitur time-domain).
+
+        Parameters
+        ----------
+        loader : EEGLoader
+            Loader instance (sudah load file EDF).
+        df : pd.DataFrame
+            DataFrame sinyal (kolom per channel + time + marker).
+        channels : list[str]
+            Nama channel yang akan dihitung.
+        task_name : str
+            Nama task target (misal 'Thinking').
+        subbands : dict | None
+            Subband definitions.
+        baseline_task : str
+            Nama task baseline (default: 'Resting').
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, baseline_power,
+                       task_power, erd_ers_pct.
+                       Kosong jika tidak ditemukan pasangan valid.
+        """
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+
+        occurrences = loader.get_task_occurrences()
+        if not occurrences:
+            return pd.DataFrame()
+
+        # Cari pasangan baseline_task â†’ task_name yang berurutan
+        pair = None
+        for i in range(len(occurrences) - 1):
+            curr = occurrences[i]
+            nxt = occurrences[i + 1]
+            if curr["task"] == baseline_task and nxt["task"] == task_name:
+                pair = (curr["occurrence"], nxt["occurrence"])
+                break
+
+        if pair is None:
+            return pd.DataFrame()
+
+        baseline_occ, task_occ = pair
+
+        # Ekstrak segment untuk baseline dan task
+        seg_baseline = loader.extract_occurrence_segment(
+            df, baseline_task, baseline_occ
+        )
+        seg_task = loader.extract_occurrence_segment(
+            df, task_name, task_occ
+        )
+
+        if seg_baseline.empty or seg_task.empty:
+            return pd.DataFrame()
+        if len(seg_baseline) < 4 or len(seg_task) < 4:
+            return pd.DataFrame()
+
+        sfreq = loader.sfreq
+        rows = []
+
+        for ch in channels:
+            if ch not in seg_baseline.columns or ch not in seg_task.columns:
+                continue
+
+            sig_base = seg_baseline[ch].values
+            sig_task = seg_task[ch].values
+
+            for sb_name, (low, high) in subbands.items():
+                power_base = EEGFeatures.compute_band_power(
+                    sig_base, sfreq, low, high
+                )
+                power_task = EEGFeatures.compute_band_power(
+                    sig_task, sfreq, low, high
+                )
+
+                erd_ers = (
+                    ((power_task - power_base) / power_base) * 100.0
+                    if power_base != 0 else 0.0
+                )
+
+                rows.append({
+                    "task": task_name,
+                    "channel": ch,
+                    "subband": sb_name,
+                    "baseline_power": power_base,
+                    "task_power": power_task,
+                    "erd_ers_pct": erd_ers,
+                })
+
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def compute_band_ratios(features_df, ratios=None):
+        """Hitung rasio power antar subband.
+
+        Dari pipeline EEG-ALS-/03_extract_features.py.
+
+        Parameters
+        ----------
+        features_df : pd.DataFrame
+            Hasil dari compute_subband_features (harus ada kolom band_power).
+        ratios : dict | None
+            Mapping nama_ratio -> (subband_atas, subband_bawah).
+            Default dari config BAND_RATIOS.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: channel, ratio_name, value.
+        """
+        if ratios is None:
+            ratios = BAND_RATIOS
+
+        if "band_power" not in features_df.columns:
+            return pd.DataFrame()
+
+        rows = []
+        for ch, grp in features_df.groupby("channel"):
+            power_map = dict(zip(grp["subband"], grp["band_power"]))
+
+            for ratio_name, (sb_num, sb_den) in ratios.items():
+                num = power_map.get(sb_num, 0.0)
+                den = power_map.get(sb_den, 0.0)
+                value = float(num / den) if den > 0 else 0.0
+                rows.append({
+                    "channel": ch,
+                    "ratio_name": ratio_name,
+                    "value": value,
+                })
+
+        return pd.DataFrame(rows)
+
