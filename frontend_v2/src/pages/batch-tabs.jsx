@@ -1,25 +1,35 @@
 /* global React, Icon */
-const { useState: useStateBT, useMemo: useMemoBT, useEffect: useEffectBT } = React;
+const { useState: useStateBT, useMemo: useMemoBT } = React;
 
 const _SUBBANDS_BT = [
-  { id: 'delta', name: 'Delta' },
-  { id: 'theta', name: 'Theta' },
-  { id: 'mu', name: 'Mu' },
-  { id: 'alpha', name: 'Alpha' },
-  { id: 'low_beta', name: 'Low_Beta' },
-  { id: 'beta', name: 'Beta' },
+  { id: 'delta',     name: 'Delta' },
+  { id: 'theta',     name: 'Theta' },
+  { id: 'mu',        name: 'Mu' },
+  { id: 'alpha',     name: 'Alpha' },
+  { id: 'low_beta',  name: 'Low_Beta' },
+  { id: 'beta',      name: 'Beta' },
   { id: 'high_beta', name: 'High_Beta' },
-  { id: 'gamma', name: 'Gamma' },
+  { id: 'gamma',     name: 'Gamma' },
 ];
 
-function _aggMean(arr) {
-  if (!arr || arr.length === 0) return null;
-  let sum = 0, n = 0;
+function _numStats(arr) {
+  const nums = [];
   for (const v of arr) {
     const x = typeof v === 'number' ? v : parseFloat(v);
-    if (!isNaN(x)) { sum += x; n++; }
+    if (!isNaN(x)) nums.push(x);
   }
-  return n === 0 ? null : sum / n;
+  if (nums.length === 0) return null;
+  const n = nums.length;
+  const sum = nums.reduce((s, v) => s + v, 0);
+  const mean = sum / n;
+  const variance = nums.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const std = Math.sqrt(variance);
+  return { count: n, mean, std, min: Math.min(...nums), max: Math.max(...nums) };
+}
+
+function _aggMean(arr) {
+  const s = _numStats(arr);
+  return s ? s.mean : null;
 }
 
 function _fmt(v, digits = 3) {
@@ -42,6 +52,24 @@ function _emptyTab(title, sub) {
       </div>
     </div>
   );
+}
+
+function _detectFeatureCols(records) {
+  if (!records || records.length === 0) return [];
+  const exclude = new Set([
+    'category', 'subject', 'scenario', 'filename', 'task', 'channel', 'subband',
+    'chunk_idx', 'chunk_start', 'chunk_end', 'occurrence', 'onset', 'duration',
+  ]);
+  const first = records[0];
+  return Object.keys(first).filter(k => !exclude.has(k) && typeof first[k] === 'number');
+}
+
+function _resolveSubbandNames(records, subbandsPref) {
+  const recordSubbands = _uniqueNonEmpty(records.map(r => r.subband));
+  const prefNames = subbandsPref.map(id => _SUBBANDS_BT.find(s => s.id === id)?.name).filter(Boolean);
+  let names = prefNames.filter(sb => recordSubbands.includes(sb));
+  if (names.length === 0) names = recordSubbands;
+  return names;
 }
 
 // ===================== FILE LIST TAB =====================
@@ -115,91 +143,87 @@ function FileListTab({ results }) {
   );
 }
 
-// ===================== DELTA CHART TAB =====================
-function DeltaChartTab({ results, subbands }) {
+// ===================== CHART TAB (bar per subband, pure mean ± std) =====================
+function ChartTab({ results, subbands }) {
   const records = results?.records || [];
-  const sbNamesPref = subbands.map(id => _SUBBANDS_BT.find(s => s.id === id)?.name).filter(Boolean);
-  const sbNamesAvail = _uniqueNonEmpty(records.map(r => r.subband));
-  let sbNames = sbNamesPref.filter(sb => sbNamesAvail.includes(sb));
-  if (sbNames.length === 0) sbNames = sbNamesAvail;
-  const [featureKey, setFeatureKey] = useStateBT('mav');
+  const featureCols = _detectFeatureCols(records);
+  const sbNames = _resolveSubbandNames(records, subbands);
+  const [feature, setFeature] = useStateBT(featureCols[0] || 'mav');
+  const activeFeature = featureCols.includes(feature) ? feature : (featureCols[0] || 'mav');
 
-  const aggregates = useMemoBT(() => {
+  const statsBySubband = useMemoBT(() => {
     const out = {};
     for (const sb of sbNames) {
-      const alsVals = records.filter(r => r.subband === sb && r.category === 'ALS').map(r => r[featureKey]);
-      const normVals = records.filter(r => r.subband === sb && r.category === 'Normal').map(r => r[featureKey]);
-      out[sb] = { als: _aggMean(alsVals), normal: _aggMean(normVals) };
+      const vals = records.filter(r => r.subband === sb).map(r => r[activeFeature]);
+      out[sb] = _numStats(vals);
     }
     return out;
-  }, [records, sbNames, featureKey]);
+  }, [records, sbNames, activeFeature]);
 
   if (records.length === 0) {
-    return _emptyTab('Belum ada data', 'Proses batch untuk melihat delta chart per subband.');
+    return _emptyTab('Belum ada data', 'Proses batch untuk melihat chart fitur per subband.');
   }
-  if (sbNames.length === 0) {
-    return _emptyTab('Belum ada data subband', 'Data hasil batch tidak memiliki subband yang bisa diplot.');
+  if (sbNames.length === 0 || featureCols.length === 0) {
+    return _emptyTab('Belum ada fitur', 'Tidak ada kolom fitur numerik atau subband di hasil batch.');
   }
 
-  const allVals = Object.values(aggregates).flatMap(v => [v.als, v.normal]).filter(v => v !== null);
-  const axisMax = Math.max(...allVals.map(v => Math.abs(v)), Number.EPSILON) * 1.05;
+  const meansForChart = sbNames.map(sb => statsBySubband[sb]?.mean ?? 0);
+  const maxAbs = Math.max(...meansForChart.map(Math.abs), Number.EPSILON);
 
   const w = 800, h = 320;
   const groupW = (w - 80) / Math.max(sbNames.length, 1);
-  const barW = 30;
+  const barW = Math.min(48, groupW * 0.6);
   const maxH = h - 70;
 
   return (
     <>
       <div className="ctrl-bar">
-        <select value={featureKey} onChange={e => setFeatureKey(e.target.value)}
+        <select value={activeFeature} onChange={e => setFeature(e.target.value)}
           style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, fontWeight: 600 }}>
-          <option value="mav">Fitur: MAV</option>
-          <option value="variance">Fitur: Variance</option>
-          <option value="std">Fitur: STD</option>
+          {featureCols.map(f => <option key={f} value={f}>Fitur: {f}</option>)}
         </select>
         <span className="spacer" />
-        <span className="chip-mini">{records.length} records</span>
+        <span className="chip-mini">{records.length} records · {sbNames.length} subband</span>
       </div>
       <div style={{ padding: 24 }}>
         <div className="card" style={{ padding: 20 }}>
           <div className="row-between mb-16">
             <div className="row gap-8">
               <Icon.Chart />
-              <span style={{ fontWeight: 600 }}>{featureKey.toUpperCase()} · per Subband</span>
+              <span style={{ fontWeight: 600 }}>{activeFeature.toUpperCase()} per Subband</span>
             </div>
-            <div className="row gap-12" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: '#B13A4C', marginRight: 5 }} />ALS</span>
-              <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: '#1F7A52', marginRight: 5 }} />Normal</span>
-            </div>
+            <span className="chip-mini accent">mean ± std (whisker)</span>
           </div>
           <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 360 }}>
             <defs>
-              <linearGradient id="alsGrad2" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#C95466" /><stop offset="100%" stopColor="#B13A4C" />
-              </linearGradient>
-              <linearGradient id="normGrad2" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#2D9264" /><stop offset="100%" stopColor="#1F7A52" />
+              <linearGradient id="ctG" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#7B83E5" /><stop offset="100%" stopColor="#5B65DC" />
               </linearGradient>
             </defs>
             {[0, 0.25, 0.5, 0.75, 1].map(t => (
               <g key={t}>
                 <line x1="50" x2={w - 20} y1={20 + maxH * (1 - t)} y2={20 + maxH * (1 - t)} className="gridline" />
-                <text x="42" y={24 + maxH * (1 - t)} textAnchor="end" className="axis-text">{_fmt(t * axisMax, 2)}</text>
+                <text x="42" y={24 + maxH * (1 - t)} textAnchor="end" className="axis-text">{_fmt(t * maxAbs, 2)}</text>
               </g>
             ))}
             {sbNames.map((sb, gi) => {
               const cx = 70 + gi * groupW + groupW / 2;
-              const als = aggregates[sb]?.als ?? 0;
-              const norm = aggregates[sb]?.normal ?? 0;
-              const alsH = (als / axisMax) * maxH;
-              const normH = (norm / axisMax) * maxH;
+              const s = statsBySubband[sb] || { mean: 0, std: 0 };
+              const v = s.mean ?? 0;
+              const bH = Math.abs(v / maxAbs) * maxH;
+              const y = v >= 0 ? 20 + maxH - bH : 20 + maxH;
+              const std = s.std ?? 0;
+              const stdH = Math.min((std / maxAbs) * maxH, maxH);
+              const yTop = Math.max(20, y - stdH);
+              const yBot = Math.min(20 + maxH, y + stdH);
               return (
                 <g key={sb}>
-                  <rect x={cx - barW - 4} y={20 + maxH - alsH} width={barW} height={alsH} rx="14" ry="14" fill="url(#alsGrad2)" />
-                  <rect x={cx + 4} y={20 + maxH - normH} width={barW} height={normH} rx="14" ry="14" fill="url(#normGrad2)" />
+                  <rect x={cx - barW / 2} y={y} width={barW} height={bH} rx="14" ry="14" fill="url(#ctG)" />
+                  <line x1={cx} x2={cx} y1={yTop} y2={yBot} stroke="#3A45A8" strokeWidth="2" strokeLinecap="round" />
+                  <line x1={cx - 6} x2={cx + 6} y1={yTop} y2={yTop} stroke="#3A45A8" strokeWidth="2" strokeLinecap="round" />
+                  <line x1={cx - 6} x2={cx + 6} y1={yBot} y2={yBot} stroke="#3A45A8" strokeWidth="2" strokeLinecap="round" />
                   <text x={cx} y={h - 24} textAnchor="middle" className="axis-text axis-text-bold">{sb}</text>
-                  <text x={cx} y={h - 8} textAnchor="middle" className="axis-text">ALS {_fmt(als, 2)} · N {_fmt(norm, 2)}</text>
+                  <text x={cx} y={h - 8} textAnchor="middle" className="axis-text">μ={_fmt(v, 3)} ±{_fmt(std, 3)}</text>
                 </g>
               );
             })}
@@ -210,47 +234,60 @@ function DeltaChartTab({ results, subbands }) {
   );
 }
 
-// ===================== TABEL DELTA =====================
-function TabelDeltaTab({ results, subbands }) {
+// ===================== TABEL TAB (aggregation per subject × channel × subband) =====================
+function TabelTab({ results, subbands }) {
   const records = results?.records || [];
-  const sbNames = subbands.map(id => _SUBBANDS_BT.find(s => s.id === id)?.name).filter(Boolean);
+  const featureCols = _detectFeatureCols(records);
+  const sbNames = _resolveSubbandNames(records, subbands);
 
   const rows = useMemoBT(() => {
     const out = [];
-    const subjectMap = new Map();
+    const groupMap = new Map();
     for (const r of records) {
-      const key = `${r.category}_${r.subject}_${r.channel}_${r.subband}`;
-      if (!subjectMap.has(key)) {
-        subjectMap.set(key, {
-          category: r.category, subject: r.subject, channel: r.channel, subband: r.subband,
-          mav: [], variance: [], std: [],
+      const key = `${r.subject ?? '-'}__${r.channel ?? '-'}__${r.subband ?? '-'}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          subject: r.subject || '-',
+          channel: r.channel || '-',
+          subband: r.subband || '-',
+          category: r.category || '-',
+          buckets: Object.fromEntries(featureCols.map(f => [f, []])),
         });
       }
-      const e = subjectMap.get(key);
-      if (typeof r.mav === 'number') e.mav.push(r.mav);
-      if (typeof r.variance === 'number') e.variance.push(r.variance);
-      if (typeof r.std === 'number') e.std.push(r.std);
+      const g = groupMap.get(key);
+      for (const f of featureCols) {
+        if (typeof r[f] === 'number') g.buckets[f].push(r[f]);
+      }
     }
-    for (const e of subjectMap.values()) {
-      if (!sbNames.includes(e.subband)) continue;
-      out.push({
-        ...e,
-        mavMean: _aggMean(e.mav),
-        varianceMean: _aggMean(e.variance),
-        stdMean: _aggMean(e.std),
-      });
+    for (const g of groupMap.values()) {
+      if (sbNames.length > 0 && !sbNames.includes(g.subband)) continue;
+      const row = {
+        subject: g.subject,
+        channel: g.channel,
+        subband: g.subband,
+        category: g.category,
+      };
+      for (const f of featureCols) row[`${f}_mean`] = _aggMean(g.buckets[f]);
+      out.push(row);
     }
     return out;
-  }, [records, sbNames]);
+  }, [records, sbNames, featureCols]);
 
   if (records.length === 0) {
     return _emptyTab('Belum ada data', 'Proses batch untuk melihat tabel agregasi per subjek.');
+  }
+  if (featureCols.length === 0) {
+    return _emptyTab('Belum ada fitur', 'Tidak ada kolom fitur numerik untuk agregasi.');
   }
 
   return (
     <>
       <div className="ctrl-bar">
         <span className="chip-mini">{rows.length} baris (per subjek × channel × subband)</span>
+        <span className="spacer" />
+        <button className="btn btn-secondary" onClick={() => window.downloadCSV(rows, `batch_aggregate_${Date.now()}.csv`)}>
+          <Icon.Download /> CSV
+        </button>
       </div>
       <div style={{ padding: '0 24px 24px' }}>
         <div className="table-wrap" style={{ overflowX: 'auto' }}>
@@ -258,69 +295,71 @@ function TabelDeltaTab({ results, subbands }) {
             <thead>
               <tr>
                 <th>Cat</th><th>Subject</th><th>Channel</th><th>Subband</th>
-                <th className="num">MAV (avg)</th><th className="num">Variance (avg)</th><th className="num">STD (avg)</th>
+                {featureCols.map(f => <th key={f} className="num">{f} (mean)</th>)}
               </tr>
             </thead>
             <tbody>
-              {rows.slice(0, 200).map((r, i) => (
+              {rows.slice(0, 300).map((r, i) => (
                 <tr key={i}>
-                  <td><span className={`badge ${r.category === 'ALS' ? 'badge-als' : 'badge-normal'}`}>{r.category}</span></td>
+                  <td><span className={`badge ${r.category === 'ALS' ? 'badge-als' : r.category === 'Normal' ? 'badge-normal' : 'badge-accent'}`}>{r.category}</span></td>
                   <td>{r.subject}</td>
                   <td>{r.channel}</td>
-                  <td>{r.subband}</td>
-                  <td className="num">{_fmt(r.mavMean)}</td>
-                  <td className="num">{_fmt(r.varianceMean)}</td>
-                  <td className="num">{_fmt(r.stdMean)}</td>
+                  <td><span className="badge badge-accent">{r.subband}</span></td>
+                  {featureCols.map(f => <td key={f} className="num">{_fmt(r[`${f}_mean`])}</td>)}
                 </tr>
               ))}
             </tbody>
           </table>
-          {rows.length > 200 && <div className="muted" style={{ fontSize: 12, marginTop: 12, textAlign: 'center' }}>Menampilkan 200 baris pertama dari {rows.length}</div>}
+          {rows.length > 300 && <div className="muted" style={{ fontSize: 12, marginTop: 12, textAlign: 'center' }}>Menampilkan 300 baris pertama dari {rows.length}. Download CSV untuk lengkap.</div>}
         </div>
       </div>
     </>
   );
 }
 
-// ===================== HEATMAP =====================
+// ===================== HEATMAP TAB (channel × subband, pure mean) =====================
 function HeatmapTab({ results, subbands, channels }) {
   const records = results?.records || [];
-  const selectedCols = subbands.map(id => _SUBBANDS_BT.find(s => s.id === id)?.name).filter(Boolean);
-  const recordSubbands = _uniqueNonEmpty(records.map(r => r.subband));
-  let cols = selectedCols.filter(sb => recordSubbands.includes(sb));
-  if (cols.length === 0) cols = recordSubbands;
+  const featureCols = _detectFeatureCols(records);
+  const [feature, setFeature] = useStateBT(featureCols[0] || 'mav');
+  const activeFeature = featureCols.includes(feature) ? feature : (featureCols[0] || 'mav');
 
+  const cols = _resolveSubbandNames(records, subbands);
   const recordChannels = _uniqueNonEmpty(records.map(r => r.channel));
   const selectedRows = (channels || []).filter(ch => recordChannels.includes(ch));
-  const rows = (selectedRows.length > 0 ? selectedRows : recordChannels).slice(0, 12);
+  const rows = (selectedRows.length > 0 ? selectedRows : recordChannels).slice(0, 16);
 
   const cellVals = useMemoBT(() => {
     return rows.map(ch => cols.map(sb => {
-      const alsVals = records.filter(r => r.channel === ch && r.subband === sb && r.category === 'ALS').map(r => r.mav);
-      const normVals = records.filter(r => r.channel === ch && r.subband === sb && r.category === 'Normal').map(r => r.mav);
-      const als = _aggMean(alsVals);
-      const norm = _aggMean(normVals);
-      if (als === null && norm === null) return null;
-      return (als ?? 0) - (norm ?? 0);
+      const vals = records.filter(r => r.channel === ch && r.subband === sb).map(r => r[activeFeature]);
+      return _aggMean(vals);
     }));
-  }, [records, rows, cols]);
+  }, [records, rows, cols, activeFeature]);
 
   if (records.length === 0 || rows.length === 0 || cols.length === 0) {
     return _emptyTab('Belum ada data heatmap', 'Pilih channel + subband dan proses batch.');
   }
+  if (featureCols.length === 0) {
+    return _emptyTab('Belum ada fitur', 'Tidak ada kolom fitur numerik untuk heatmap.');
+  }
 
   const flat = cellVals.flat().filter(v => v !== null);
-  const maxAbs = Math.max(...flat.map(Math.abs), 0.001);
+  const minV = Math.min(...flat);
+  const maxV = Math.max(...flat);
+  const span = (maxV - minV) || 1;
 
   return (
     <>
       <div className="ctrl-bar">
-        <span className="chip-mini accent">Δ MAV (ALS − Normal)</span>
+        <select value={activeFeature} onChange={e => setFeature(e.target.value)}
+          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, fontWeight: 600 }}>
+          {featureCols.map(f => <option key={f} value={f}>Fitur: {f}</option>)}
+        </select>
         <span className="spacer" />
         <div className="row gap-8" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          <span>−{_fmt(maxAbs, 2)}</span>
-          <span style={{ width: 100, height: 8, borderRadius: 999, background: 'linear-gradient(90deg, #1F7A52, #DDDFFB, #B13A4C)' }} />
-          <span>+{_fmt(maxAbs, 2)}</span>
+          <span>{_fmt(minV, 2)}</span>
+          <span style={{ width: 100, height: 8, borderRadius: 999, background: 'linear-gradient(90deg, #EEEFFD, #7B83E5, #3A45A8)' }} />
+          <span>{_fmt(maxV, 2)}</span>
         </div>
       </div>
       <div style={{ padding: 24 }}>
@@ -335,14 +374,15 @@ function HeatmapTab({ results, subbands, channels }) {
               {cols.map((c, ci) => {
                 const v = cellVals[ri][ci];
                 if (v === null) return <div key={c} style={{ background: 'var(--surface-tint)', borderRadius: 8, height: 32 }} />;
-                const alpha = 0.08 + (Math.abs(v) / maxAbs) * 0.87;
-                const bg = v >= 0 ? `rgba(177, 58, 76, ${alpha})` : `rgba(31, 122, 82, ${alpha})`;
+                const t = (v - minV) / span;
+                const alpha = 0.12 + t * 0.83;
+                const bg = `rgba(91, 101, 220, ${alpha})`;
                 return (
                   <div key={c} style={{
                     background: bg, borderRadius: 8, padding: '8px 4px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     fontSize: 10.5, fontWeight: 600, height: 32,
-                    color: Math.abs(v) / maxAbs > 0.55 ? '#fff' : 'var(--text-primary)',
+                    color: t > 0.55 ? '#fff' : 'var(--text-primary)',
                   }}>{_fmt(v, 2)}</div>
                 );
               })}
@@ -354,25 +394,31 @@ function HeatmapTab({ results, subbands, channels }) {
   );
 }
 
-// ===================== SCATTER =====================
+// ===================== SCATTER TAB (any X vs any Y, color by subband) =====================
 function ScatterTab({ results }) {
   const records = results?.records || [];
+  const featureCols = _detectFeatureCols(records);
   const subbandsAvail = _uniqueNonEmpty(records.map(r => r.subband));
-  const [subband, setSubband] = useStateBT('');
+  const [xKey, setXKey] = useStateBT(featureCols[0] || 'mav');
+  const [yKey, setYKey] = useStateBT(featureCols[1] || featureCols[0] || 'variance');
+  const [sbFilter, setSbFilter] = useStateBT('all');
 
-  useEffectBT(() => {
-    if (subbandsAvail.length === 0) return;
-    if (!subbandsAvail.includes(subband)) setSubband(subbandsAvail[0]);
-  }, [subbandsAvail, subband]);
-
-  const activeSubband = subbandsAvail.includes(subband) ? subband : (subbandsAvail[0] || '');
+  const activeX = featureCols.includes(xKey) ? xKey : (featureCols[0] || 'mav');
+  const activeY = featureCols.includes(yKey) ? yKey : (featureCols[1] || featureCols[0] || 'variance');
 
   const points = records
-    .filter(r => r.subband === activeSubband && typeof r.mav === 'number' && typeof r.variance === 'number')
-    .map(r => ({ x: r.mav, y: r.variance, cat: r.category }));
+    .filter(r => (sbFilter === 'all' || r.subband === sbFilter)
+      && typeof r[activeX] === 'number' && typeof r[activeY] === 'number')
+    .map(r => ({ x: r[activeX], y: r[activeY], sb: r.subband }));
 
-  if (records.length === 0 || points.length === 0) {
-    return _emptyTab('Belum ada scatter data', 'Pilih subband yang ada di hasil dan proses batch.');
+  if (records.length === 0) {
+    return _emptyTab('Belum ada data', 'Proses batch untuk melihat scatter plot.');
+  }
+  if (featureCols.length < 2 && featureCols.length < 1) {
+    return _emptyTab('Belum ada fitur', 'Butuh minimal 1 kolom fitur numerik untuk scatter.');
+  }
+  if (points.length === 0) {
+    return _emptyTab('Tidak ada titik', 'Pilih X/Y fitur lain atau subband yang ada datanya.');
   }
 
   const xs = points.map(p => p.x);
@@ -381,14 +427,27 @@ function ScatterTab({ results }) {
   const yMin = Math.min(...ys), yMax = Math.max(...ys);
   const norm = (v, lo, hi) => hi === lo ? 0.5 : (v - lo) / (hi - lo);
 
+  const sbColors = ['#5B65DC', '#7B83E5', '#4A53C0', '#8E96EE', '#3A45A8', '#A1A7F2', '#6F3D9E', '#B07B1F'];
+  const sbColorMap = {};
+  subbandsAvail.forEach((sb, i) => { sbColorMap[sb] = sbColors[i % sbColors.length]; });
+
   const w = 800, h = 360, pad = 50, innerW = w - pad - 20, innerH = h - pad - 30;
 
   return (
     <>
       <div className="ctrl-bar">
-        <select value={activeSubband} onChange={e => setSubband(e.target.value)}
+        <select value={activeX} onChange={e => setXKey(e.target.value)}
           style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, fontWeight: 600 }}>
-          {subbandsAvail.map(s => <option key={s} value={s}>Subband: {s}</option>)}
+          {featureCols.map(f => <option key={f} value={f}>X: {f}</option>)}
+        </select>
+        <select value={activeY} onChange={e => setYKey(e.target.value)}
+          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, fontWeight: 600 }}>
+          {featureCols.map(f => <option key={f} value={f}>Y: {f}</option>)}
+        </select>
+        <select value={sbFilter} onChange={e => setSbFilter(e.target.value)}
+          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5 }}>
+          <option value="all">Subband: All</option>
+          {subbandsAvail.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <span className="spacer" />
         <span className="chip-mini">{points.length} points</span>
@@ -396,10 +455,11 @@ function ScatterTab({ results }) {
       <div style={{ padding: 24 }}>
         <div className="card" style={{ padding: 20 }}>
           <div className="row-between mb-16">
-            <div className="row gap-8"><Icon.Chart /><span style={{ fontWeight: 600 }}>MAV vs Variance · {activeSubband}</span></div>
-            <div className="row gap-12" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#B13A4C', marginRight: 5 }} />ALS</span>
-              <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#1F7A52', marginRight: 5 }} />Normal</span>
+            <div className="row gap-8"><Icon.Chart /><span style={{ fontWeight: 600 }}>{activeX} vs {activeY}</span></div>
+            <div className="row gap-12" style={{ fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+              {subbandsAvail.map(s => (
+                <span key={s}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: sbColorMap[s], marginRight: 5 }} />{s}</span>
+              ))}
             </div>
           </div>
           <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 360 }}>
@@ -409,16 +469,15 @@ function ScatterTab({ results }) {
                 <line x1={pad + innerW * t} x2={pad + innerW * t} y1="20" y2={20 + innerH} className="gridline" />
               </g>
             ))}
-            <text x={w - 30} y={20 + innerH + 18} textAnchor="end" className="axis-text">MAV (µV) →</text>
-            <text x={pad - 36} y="24" className="axis-text">Var</text>
+            <text x={w - 30} y={20 + innerH + 18} textAnchor="end" className="axis-text">{activeX} →</text>
+            <text x={pad - 36} y="24" className="axis-text">{activeY}</text>
             {points.map((p, i) => {
               const cx = pad + innerW * norm(p.x, xMin, xMax);
               const cy = 20 + innerH * (1 - norm(p.y, yMin, yMax));
-              const isAls = p.cat === 'ALS';
               return (
-                <circle key={i} cx={cx} cy={cy} r="6"
-                  fill={isAls ? '#B13A4C' : '#1F7A52'}
-                  stroke="#fff" strokeWidth="2" opacity="0.85" />
+                <circle key={i} cx={cx} cy={cy} r="5"
+                  fill={sbColorMap[p.sb] || '#5B65DC'}
+                  stroke="#fff" strokeWidth="1.5" opacity="0.8" />
               );
             })}
           </svg>
@@ -436,7 +495,6 @@ function ScatterTab({ results }) {
 function DataTableTab({ results, subbands, onDownloadExcel }) {
   const allRecords = results?.records || [];
   const [page, setPage] = useStateBT(0);
-  const [catFilter, setCatFilter] = useStateBT('all');
   const [taskFilter, setTaskFilter] = useStateBT('all');
   const [sbFilter, setSbFilter] = useStateBT('all');
   const pageSize = 50;
@@ -445,12 +503,10 @@ function DataTableTab({ results, subbands, onDownloadExcel }) {
     return _emptyTab('Belum ada data', 'Proses batch untuk melihat tabel record.');
   }
 
-  const cats = Array.from(new Set(allRecords.map(r => r.category).filter(Boolean)));
   const tasks = Array.from(new Set(allRecords.map(r => r.task).filter(Boolean)));
   const sbs = Array.from(new Set(allRecords.map(r => r.subband).filter(Boolean)));
 
   const filtered = allRecords.filter(r =>
-    (catFilter === 'all' || r.category === catFilter) &&
     (taskFilter === 'all' || r.task === taskFilter) &&
     (sbFilter === 'all' || r.subband === sbFilter),
   );
@@ -463,11 +519,6 @@ function DataTableTab({ results, subbands, onDownloadExcel }) {
   return (
     <>
       <div className="ctrl-bar">
-        <select value={catFilter} onChange={e => { setCatFilter(e.target.value); setPage(0); }}
-          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5 }}>
-          <option value="all">Kategori: All</option>
-          {cats.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
         <select value={taskFilter} onChange={e => { setTaskFilter(e.target.value); setPage(0); }}
           style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5 }}>
           <option value="all">Task: All</option>
@@ -530,11 +581,11 @@ function RingkasanTab({ results, scanMeta }) {
   if (records.length === 0) {
     return _emptyTab('Belum ada ringkasan', 'Proses batch untuk melihat ringkasan akhir.');
   }
-  const cats = Array.from(new Set(records.map(r => r.category).filter(Boolean)));
-  const subjects = Array.from(new Set(records.map(r => r.subject).filter(Boolean)));
-  const tasks = Array.from(new Set(records.map(r => r.task).filter(Boolean)));
-  const channels = Array.from(new Set(records.map(r => r.channel).filter(Boolean)));
-  const sbs = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
+  const subjects = _uniqueNonEmpty(records.map(r => r.subject));
+  const tasks = _uniqueNonEmpty(records.map(r => r.task));
+  const channels = _uniqueNonEmpty(records.map(r => r.channel));
+  const sbs = _uniqueNonEmpty(records.map(r => r.subband));
+  const featureCols = _detectFeatureCols(records);
   const errs = results?.errors?.length || 0;
   const processed = results?.processed_files || new Set(records.map(r => r.filename)).size;
 
@@ -542,11 +593,11 @@ function RingkasanTab({ results, scanMeta }) {
     ['Total records', records.length.toLocaleString()],
     ['Files diproses', `${processed} / ${scanMeta?.total_files || processed}`],
     ['Mode', results?.mode === 'chunk' ? `Chunk ${results.chunk_duration}s` : 'Full Data'],
-    ['Kategori', cats.join(', ') || '-'],
     ['Subjek', subjects.length],
     ['Tasks', tasks.join(', ') || '-'],
     ['Channels', channels.length],
     ['Subbands', sbs.join(', ') || '-'],
+    ['Fitur', featureCols.join(', ') || '-'],
     ['Errors', errs],
   ];
 
@@ -565,4 +616,4 @@ function RingkasanTab({ results, scanMeta }) {
   );
 }
 
-Object.assign(window, { FileListTab, DeltaChartTab, TabelDeltaTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab });
+Object.assign(window, { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab });

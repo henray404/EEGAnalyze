@@ -2,7 +2,7 @@
 const { useState, useRef: useRefB } = React;
 const Api = window.Api;
 const AppConfigB = window.AppConfig;
-const { FileListTab, DeltaChartTab, TabelDeltaTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab } = window;
+const { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab } = window;
 
 const SUBBANDS_B = [
   { id: 'delta', name: 'Delta' },
@@ -71,7 +71,7 @@ function BatchPage() {
   const [icaMethod, setIcaMethod] = useState('fastica');
   const [extractMode, setExtractMode] = useState('chunk');
   const [chunkDur, setChunkDur] = useState(0.5);
-  const [tab, setTab] = useState('delta');
+  const [tab, setTab] = useState('chart');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [filesProcessed, setFilesProcessed] = useState(0);
@@ -414,13 +414,13 @@ function BatchPage() {
           <section className="split-right">
             <div className="tabs-pill">
               {[
-                { id: 'files', label: 'File List' },
-                { id: 'delta', label: 'Delta Chart' },
-                { id: 'tdelta', label: 'Tabel Delta' },
+                { id: 'files',   label: 'File List' },
+                { id: 'chart',   label: 'Chart' },
+                { id: 'tabel',   label: 'Tabel' },
                 { id: 'heatmap', label: 'Heatmap' },
                 { id: 'scatter', label: 'Scatter' },
-                { id: 'data', label: 'Data Table' },
-                { id: 'sum', label: 'Ringkasan' },
+                { id: 'data',    label: 'Data Table' },
+                { id: 'sum',     label: 'Ringkasan' },
               ].map(t => (
                 <button key={t.id} className={`tab-pill ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>{t.label}</button>
               ))}
@@ -436,8 +436,8 @@ function BatchPage() {
               <div className="canvas">
                 <div className="empty">
                   <BatchEmptyArt />
-                  <h4>Upload file ZIP untuk memulai analisis batch</h4>
-                  <p>Hasil delta, heatmap, dan scatter akan tampil di sini setelah proses selesai.</p>
+                  <h4>Upload file ZIP untuk memulai ekstraksi fitur</h4>
+                  <p>Ringkasan fitur, tabel record, dan statistik akan tampil di sini setelah proses selesai.</p>
                 </div>
               </div>
             ) : processing ? (
@@ -445,18 +445,18 @@ function BatchPage() {
                 <div className="empty">
                   <BatchEmptyArt />
                   <h4>Memproses {filesProcessed} / {totalFiles} file...</h4>
-                  <p>Pipeline paralel sedang menjalankan ekstraksi fitur dan delta antar grup.</p>
+                  <p>Pipeline paralel menjalankan ekstraksi fitur per record.</p>
                 </div>
               </div>
             ) : (
               <>
-                {tab === 'files' && <FileListTab results={results} />}
-                {tab === 'delta' && <DeltaChartTab results={results} subbands={subbands} />}
-                {tab === 'tdelta' && <TabelDeltaTab results={results} subbands={subbands} />}
+                {tab === 'files'   && <FileListTab results={results} />}
+                {tab === 'chart'   && <ChartTab results={results} subbands={subbands} />}
+                {tab === 'tabel'   && <TabelTab results={results} subbands={subbands} />}
                 {tab === 'heatmap' && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
                 {tab === 'scatter' && <ScatterTab results={results} />}
-                {tab === 'data' && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} />}
-                {tab === 'sum' && <RingkasanTab results={results} scanMeta={scanMeta} />}
+                {tab === 'data'    && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} />}
+                {tab === 'sum'     && <RingkasanTab results={results} scanMeta={scanMeta} />}
               </>
             )}
           </section>
@@ -534,21 +534,10 @@ function BatchEmptyArt() {
 
 function BatchResultStrip({ results, totalSubjects }) {
   const records = results?.records || [];
-  const alsCount = new Set(records.filter(r => r.category === 'ALS').map(r => r.subject)).size;
-  const normalCount = new Set(records.filter(r => r.category === 'Normal').map(r => r.subject)).size;
   const processedFiles = results?.processed_files ?? new Set(records.map(r => r.filename)).size;
-
-  let dMav = '-';
-  if (records.length > 0) {
-    const als = records.filter(r => r.category === 'ALS').map(r => +r.mav).filter(v => !isNaN(v));
-    const nor = records.filter(r => r.category === 'Normal').map(r => +r.mav).filter(v => !isNaN(v));
-    if (als.length > 0 && nor.length > 0) {
-      const mAls = als.reduce((s, v) => s + v, 0) / als.length;
-      const mNor = nor.reduce((s, v) => s + v, 0) / nor.length;
-      const pct = mNor !== 0 ? ((mAls - mNor) / Math.abs(mNor)) * 100 : 0;
-      dMav = `${pct.toFixed(1)}%`;
-    }
-  }
+  const subjectCount = totalSubjects ?? new Set(records.map(r => r.subject).filter(Boolean)).size;
+  const channelCount = new Set(records.map(r => r.channel).filter(Boolean)).size;
+  const subbandCount = new Set(records.map(r => r.subband).filter(Boolean)).size;
 
   const labelStyle = { fontSize: 10.5, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 };
   const valStyle = { fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' };
@@ -560,16 +549,16 @@ function BatchResultStrip({ results, totalSubjects }) {
         <div style={valStyle}>{processedFiles}</div>
       </div>
       <div className="card card-pad" style={{ padding: 18 }}>
-        <div className="label" style={labelStyle}>ALS SUBJECTS</div>
-        <div style={valStyle}>{alsCount}</div>
+        <div className="label" style={labelStyle}>TOTAL RECORDS</div>
+        <div style={valStyle}>{records.length.toLocaleString()}</div>
       </div>
       <div className="card card-pad" style={{ padding: 18 }}>
-        <div className="label" style={labelStyle}>NORMAL SUBJECTS</div>
-        <div style={valStyle}>{normalCount}</div>
+        <div className="label" style={labelStyle}>SUBJEK</div>
+        <div style={valStyle}>{subjectCount}</div>
       </div>
       <div className="card card-pad" style={{ padding: 18 }}>
-        <div className="label" style={labelStyle}>Δ MAV (ALS vs Normal)</div>
-        <div style={valStyle}>{dMav}</div>
+        <div className="label" style={labelStyle}>CHANNELS × SUBBANDS</div>
+        <div style={valStyle}>{channelCount} × {subbandCount}</div>
       </div>
     </div>
   );
