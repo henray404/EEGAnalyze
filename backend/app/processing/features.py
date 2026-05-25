@@ -22,6 +22,10 @@ def _bandpass_array(data, sfreq, low, high, order=5):
     low_n = max(low / nyq, 0.001)
     high_n = min(high / nyq, 0.999)
     b, a = butter(order, [low_n, high_n], btype="band")
+    # filtfilt butuh minimal 3*max(len(a), len(b)) samples
+    min_len = 3 * max(len(a), len(b))
+    if len(data) < min_len:
+        return np.zeros_like(data)
     return filtfilt(b, a, data)
 
 

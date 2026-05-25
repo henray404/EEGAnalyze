@@ -2,7 +2,7 @@
 const { useState, useRef: useRefB } = React;
 const Api = window.Api;
 const AppConfigB = window.AppConfig;
-const { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab } = window;
+const { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab, EncodingTab } = window;
 
 const SUBBANDS_B = [
   { id: 'delta', name: 'Delta' },
@@ -78,6 +78,7 @@ function BatchPage() {
   const [done, setDone] = useState(false);
   const [results, setResults] = useState(null);
   const [apiError, setApiError] = useState(null);
+  const [exporting, setExporting] = useState(false);
   const fileInputRef = useRefB(null);
 
   const allChannelsBatch = scanMeta?.channels?.length ? scanMeta.channels : DEFAULT_CHANNELS_B;
@@ -158,8 +159,16 @@ function BatchPage() {
     }
   };
 
+  const handleDownloadEncodingCSV = () => {
+    if (!results?.encoding_records?.length) return;
+    window.downloadCSV(results.encoding_records, `batch_encoding_${Date.now()}.csv`);
+  };
+
   const handleExportExcelBatch = async () => {
     if (!results || !results.records || results.records.length === 0) return;
+    if (exporting) return;
+    setExporting(true);
+    setApiError(null);
     const fname = `batch_features_${Date.now()}.xlsx`;
     try {
       const blob = await Api.exportExcel(
@@ -167,7 +176,9 @@ function BatchPage() {
       );
       window.downloadBlob(blob, fname);
     } catch (e) {
-      setApiError(e.message || 'Export gagal');
+      setApiError(e.message || 'Export Excel gagal');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -185,7 +196,9 @@ function BatchPage() {
           <div className="page-head-actions">
             <button className="fpill"><Icon.Folder /> {file ? `Dataset: ${file.name}` : 'Dataset: not uploaded'} <Icon.ChevDown /></button>
             <button className="fpill"><Icon.Zap /> 4 worker threads</button>
-            <button className="btn btn-primary" onClick={handleExportExcelBatch} disabled={!done}><Icon.Download /> Export Excel</button>
+            <button className="btn btn-primary" onClick={handleExportExcelBatch} disabled={!done || exporting}>
+              <Icon.Download /> {exporting ? 'Generating...' : 'Export Excel'}
+            </button>
           </div>
         </div>
 
@@ -382,11 +395,18 @@ function BatchPage() {
                 </div>
                 {extractMode === 'chunk' && (
                   <div className="form-row">
-                    <label>Durasi Chunk: {chunkDur} s</label>
-                    <div className="chip-group">
-                      {[0.25, 0.5, 1.0, 1.5, 2.0].map(d => (
-                        <button key={d} className={`chip ${d === chunkDur ? 'selected' : ''}`} onClick={() => setChunkDur(d)}>{d} s</button>
-                      ))}
+                    <label>Durasi Chunk: <strong>{chunkDur.toFixed(2)} s</strong></label>
+                    <input
+                      type="range"
+                      min="0.05" max="2" step="0.05"
+                      value={chunkDur}
+                      onChange={e => setChunkDur(parseFloat(e.target.value))}
+                      style={{ width: '100%', accentColor: 'var(--accent)' }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      <span>0.05 s</span>
+                      <span>1.00 s</span>
+                      <span>2.00 s</span>
                     </div>
                   </div>
                 )}
@@ -414,13 +434,14 @@ function BatchPage() {
           <section className="split-right">
             <div className="tabs-pill">
               {[
-                { id: 'files',   label: 'File List' },
-                { id: 'chart',   label: 'Chart' },
-                { id: 'tabel',   label: 'Tabel' },
-                { id: 'heatmap', label: 'Heatmap' },
-                { id: 'scatter', label: 'Scatter' },
-                { id: 'data',    label: 'Data Table' },
-                { id: 'sum',     label: 'Ringkasan' },
+                { id: 'files',    label: 'File List' },
+                { id: 'chart',    label: 'Chart' },
+                { id: 'tabel',    label: 'Tabel' },
+                { id: 'heatmap',  label: 'Heatmap' },
+                { id: 'scatter',  label: 'Scatter' },
+                ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
+                { id: 'data',     label: 'Data Table' },
+                { id: 'sum',      label: 'Ringkasan' },
               ].map(t => (
                 <button key={t.id} className={`tab-pill ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>{t.label}</button>
               ))}
@@ -450,13 +471,14 @@ function BatchPage() {
               </div>
             ) : (
               <>
-                {tab === 'files'   && <FileListTab results={results} />}
-                {tab === 'chart'   && <ChartTab results={results} subbands={subbands} />}
-                {tab === 'tabel'   && <TabelTab results={results} subbands={subbands} />}
-                {tab === 'heatmap' && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
-                {tab === 'scatter' && <ScatterTab results={results} />}
-                {tab === 'data'    && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} />}
-                {tab === 'sum'     && <RingkasanTab results={results} scanMeta={scanMeta} />}
+                {tab === 'files'    && <FileListTab results={results} />}
+                {tab === 'chart'    && <ChartTab results={results} subbands={subbands} />}
+                {tab === 'tabel'    && <TabelTab results={results} subbands={subbands} />}
+                {tab === 'heatmap'  && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
+                {tab === 'scatter'  && <ScatterTab results={results} />}
+                {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} />}
+                {tab === 'data'     && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
+                {tab === 'sum'      && <RingkasanTab results={results} scanMeta={scanMeta} />}
               </>
             )}
           </section>

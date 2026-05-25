@@ -86,8 +86,10 @@ async def export_excel(req: ExcelRequest):
     buf.seek(0)
 
     safe_file = req.filename.replace(" ", "_")
+    if not safe_file.lower().endswith(".xlsx"):
+        safe_file += ".xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{safe_file}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_file}"'},
     )

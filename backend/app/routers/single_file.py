@@ -12,6 +12,7 @@ Endpoint:
 
 import json
 import logging
+import math
 import numpy as np
 import plotly.graph_objects as go
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -78,6 +79,15 @@ def _is_edf(filename: str) -> bool:
     return filename.lower().endswith(".edf")
 
 
+def _sanitize_records(records: list) -> list:
+    """Ganti NaN/inf dengan None agar JSON serialization tidak gagal."""
+    for r in records:
+        for k, v in r.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                r[k] = None
+    return records
+
+
 def _load_uploaded_file(loader: EEGLoader, upload: UploadFile):
     fname = upload.filename or ""
     if _is_edf(fname):
@@ -94,14 +104,9 @@ def _apply_filters(
     loader: EEGLoader,
     bp_low: float, bp_high: float, bp_order: int,
     use_notch: bool, notch_freq: float,
-    use_car: bool, use_amplitude: bool, detect_bad: bool,
+    use_car: bool, use_amplitude: bool,
     use_ica: bool, ica_method: str, ica_n: Optional[int],
 ):
-    if detect_bad:
-        bad_chs = EEGFilters.detect_bad_channels(loader.raw)
-        if bad_chs:
-            loader.raw.info["bads"] = bad_chs
-            loader.raw.interpolate_bads(reset_bads=True, verbose=False)
     if use_car:
         EEGFilters.apply_car(loader)
     if use_amplitude:
@@ -282,7 +287,6 @@ async def process_single_file(
     notch_freq: float = Form(50.0),
     use_car: str = Form("false"),
     use_amplitude: str = Form("false"),
-    detect_bad: str = Form("false"),
     use_ica: str = Form("false"),
     ica_method: str = Form("fastica"),
     ica_n: Optional[int] = Form(None),
@@ -304,7 +308,7 @@ async def process_single_file(
             loader,
             bp_low, bp_high, bp_order,
             _to_bool(use_notch), notch_freq,
-            _to_bool(use_car), _to_bool(use_amplitude), _to_bool(detect_bad),
+            _to_bool(use_car), _to_bool(use_amplitude),
             _to_bool(use_ica), ica_method, ica_n,
         )
 
@@ -339,7 +343,7 @@ async def process_single_file(
             )
             mode = "full"
 
-        records = feat_df.to_dict(orient="records") if not feat_df.empty else []
+        records = _sanitize_records(feat_df.to_dict(orient="records")) if not feat_df.empty else []
         return JSONResponse(content={
             "mode": mode,
             "tasks": tasks,
@@ -583,7 +587,9 @@ async def plot_ica(
     bp_order: int = Form(5),
     ica_method: str = Form("fastica"),
     ica_n: Optional[int] = Form(None),
+    t_start: float = Form(0.0),
     t_dur: float = Form(5.0),
+    annotation_filter: str = Form(""),
 ):
     loader = EEGLoader()
     try:
@@ -597,16 +603,21 @@ async def plot_ica(
             raise HTTPException(status_code=422, detail=f"ICA gagal: {e}")
 
         sfreq = loader.sfreq
-        n_take = min(int(t_dur * sfreq), loader.raw.n_times)
-        data = loader.raw.get_data(start=0, stop=n_take) * 1e6
-        times = np.arange(n_take) / sfreq
+        start_idx = int(t_start * sfreq)
+        end_idx = min(start_idx + int(t_dur * sfreq), loader.raw.n_times)
+        data = loader.raw.get_data(start=start_idx, stop=end_idx) * 1e6
+        times = (np.arange(data.shape[1]) / sfreq + t_start).tolist()
+
+        allowed = _parse_csv_list(annotation_filter)
+        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed)
+        shapes, text_anns = _annotation_shapes(anns)
 
         fig = go.Figure()
         n_ch = data.shape[0]
         spread = float(np.std(data) * 6 + 1e-6)
         for i in range(n_ch):
             fig.add_trace(go.Scatter(
-                x=times.tolist(),
+                x=times,
                 y=(data[i] - i * spread).tolist(),
                 mode="lines",
                 name=f"IC {i+1}",
@@ -621,10 +632,13 @@ async def plot_ica(
             xaxis=dict(showgrid=True, gridcolor="#E8E9F8", griddash="dash"),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             showlegend=False,
+            shapes=shapes,
+            annotations=text_anns,
         )
         return JSONResponse(content={
             "figure": json.loads(fig.to_json()),
             "n_components": n_ch,
+            "annotations": anns,
         })
     except HTTPException:
         raise

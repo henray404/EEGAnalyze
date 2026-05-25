@@ -158,6 +158,7 @@ async def process_batch(
     ch_filter    = [c.strip() for c in filter_channels.split(",") if c.strip()]
 
     all_records = []
+    all_encoding = []
     errors = []
 
     for edf_path in edf_files:
@@ -227,6 +228,16 @@ async def process_batch(
             for record in feat_df.to_dict(orient="records"):
                 all_records.append({**meta, "filename": edf_path, **record})
 
+            if to_bool(chunk_mode) and not feat_df.empty:
+                try:
+                    chain_df = ChunkingPipeline.compute_chain_encoding(feat_df)
+                    if not chain_df.empty:
+                        summary_df = ChunkingPipeline.summarize_chain_encoding(chain_df)
+                        for rec in summary_df.to_dict(orient="records"):
+                            all_encoding.append({**meta, "filename": edf_path, **rec})
+                except Exception:
+                    pass
+
         except Exception as e:
             errors.append({"file": edf_path, "error": str(e)})
             continue
@@ -239,6 +250,7 @@ async def process_batch(
 
     return JSONResponse(content={
         "records": all_records,
+        "encoding_records": all_encoding,
         "total_files": len(edf_files),
         "processed_files": len(set(r["filename"] for r in all_records)),
         "errors": errors,

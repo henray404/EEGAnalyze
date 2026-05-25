@@ -3,6 +3,34 @@ const { useState, useRef, useEffect } = React;
 const Api = window.Api;
 const AppConfig = window.AppConfig;
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="canvas">
+          <div className="empty">
+            <h4>Render Error</h4>
+            <p style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+              {this.state.error?.message || 'Unknown error'}
+            </p>
+            <button className="btn btn-secondary" onClick={() => this.setState({ hasError: false, error: null })}>
+              Coba Lagi
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const SUBBANDS = AppConfig.SUBBANDS;
 
 // Fallback channel set (used before upload; replaced by backend metadata after upload)
@@ -164,7 +192,6 @@ function SingleFilePage() {
     notch_freq: notchHz,
     use_car: carOn,
     use_amplitude: amplitudeOn,
-    detect_bad: false,
     use_ica: icaOn,
     ica_method: icaMethod,
     ica_n: icaAuto ? null : icaN,
@@ -253,7 +280,9 @@ function SingleFilePage() {
           bp_low: bpLow, bp_high: bpHigh, bp_order: bpOrder,
           ica_method: icaMethod,
           ica_n: icaAuto ? null : icaN,
+          t_start: tStart,
           t_dur: tDur,
+          annotation_filter: annFilterCSV,
         });
         setIcaPlot(r.figure);
       }
@@ -628,18 +657,22 @@ function SingleFilePage() {
             {tab === 'ica' && (
               <IcaTab
                 icaOn={icaOn} file={file}
+                tStart={tStart} setTStart={setTStart}
+                tDur={tDur} setTDur={setTDur}
                 figure={icaPlot} loading={plotLoading} error={plotError}
                 onPlot={() => fetchPlot('ica')}
               />
             )}
             {tab === 'fitur' && (
-              <FiturTab
-                done={done} processing={processing}
-                results={results} error={apiError}
-                extractMode={extractMode} chunkDur={chunkDur}
-                onDownloadCSV={handleDownloadCSV}
-                onDownloadExcel={handleExportExcel}
-              />
+              <ErrorBoundary>
+                <FiturTab
+                  done={done} processing={processing}
+                  results={results} error={apiError}
+                  extractMode={extractMode} chunkDur={chunkDur}
+                  onDownloadCSV={handleDownloadCSV}
+                  onDownloadExcel={handleExportExcel}
+                />
+              </ErrorBoundary>
             )}
           </section>
         </div>
@@ -835,7 +868,7 @@ function PlotErrorBox({ msg }) {
   );
 }
 
-function IcaTab({ icaOn, file, figure, loading, error, onPlot }) {
+function IcaTab({ icaOn, file, tStart, setTStart, tDur, setTDur, figure, loading, error, onPlot }) {
   if (!icaOn) {
     return (
       <div className="canvas">
@@ -851,6 +884,8 @@ function IcaTab({ icaOn, file, figure, loading, error, onPlot }) {
     <>
       <div className="ctrl-bar">
         <span className="chip-mini accent"><Icon.Filter /> ICA Components</span>
+        <TimeStepper label="Mulai (s)" value={tStart} onChange={setTStart} step={0.5} />
+        <TimeStepper label="Durasi (s)" value={tDur} onChange={setTDur} step={1} min={1} />
         <span className="spacer" />
         <button className="btn btn-primary" onClick={onPlot} disabled={!file || loading}>
           <Icon.Play /> {loading ? 'Memuat...' : 'Tampilkan Plot'}
@@ -861,7 +896,7 @@ function IcaTab({ icaOn, file, figure, loading, error, onPlot }) {
         {!file ? (
           <EmptyPlot title="Belum ada data" sub="Upload file untuk menjalankan ICA decomposition" />
         ) : !figure ? (
-          <EmptyPlot title="Klik Tampilkan Plot" sub="ICA decomposition akan menjalankan FastICA pada sinyal yang difilter" />
+          <EmptyPlot title="Klik Tampilkan Plot" sub="Annotation task (Resting, Thinking, dll) akan muncul sebagai marker di plot" />
         ) : (
           <PlotlyView figure={figure} />
         )}

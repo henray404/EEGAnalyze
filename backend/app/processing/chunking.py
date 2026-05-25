@@ -62,7 +62,7 @@ DEFAULT_CHUNK_FEATURES = [
 TIME_DOMAIN_FEATURES = {"mav", "variance", "std"}
 FREQ_DOMAIN_FEATURES = {"band_power", "relative_power", "peak_frequency"}
 
-_MIN_CHUNK_SAMPLES = 12
+_MIN_CHUNK_SAMPLES = 4
 
 
 # ------------------------------------------------------------------ #

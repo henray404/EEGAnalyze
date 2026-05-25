@@ -179,7 +179,11 @@ class EEGFilters:
 
         ica = ICA(n_components=n_comp, method=method,
                   random_state=random_state, max_iter=500)
-        ica.fit(loader.raw, verbose=False)
+        try:
+            ica.fit(loader.raw, verbose=False)
+        except Exception as e:
+            loader.processing_log.append(f"ICA fit gagal, dilewati: {e}")
+            return
 
         bad_ica = []
 
@@ -197,20 +201,21 @@ class EEGFilters:
                     except Exception:
                         continue
 
-            # --- Muscle artifacts (gerakan otot kepala) ---
+            # --- Muscle artifacts ---
+            # Jika tidak ada dig, pakai sphere numerik default (0.095 m)
+            muscle_sphere = "auto" if bool(loader.raw.info.get("dig")) else 0.095
             muscle_indices = []
             for ch in loader.raw.ch_names:
                 ch_lower = ch.lower()
                 if any(x in ch_lower for x in ["t7", "t8", "tp9", "tp10"]):
                     try:
                         muscle_idx, _ = ica.find_bads_muscle(
-                            loader.raw, verbose=False
+                            loader.raw, sphere=muscle_sphere, verbose=False,
                         )
                         muscle_indices.extend(muscle_idx)
                     except Exception:
                         continue
 
-            # Gabungkan semua artefak (EOG + Muscle) tanpa batas
             bad_ica = list(set(eog_indices + muscle_indices))
         else:
             try:
@@ -222,7 +227,11 @@ class EEGFilters:
 
         if bad_ica:
             ica.exclude = bad_ica
-        ica.apply(loader.raw, verbose=False)
+        try:
+            ica.apply(loader.raw, verbose=False)
+        except Exception as e:
+            loader.processing_log.append(f"ICA apply gagal: {e}")
+            return
 
         n_excluded = len(ica.exclude)
         loader.processing_log.append(

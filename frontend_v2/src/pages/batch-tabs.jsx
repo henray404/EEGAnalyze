@@ -24,7 +24,7 @@ function _numStats(arr) {
   const mean = sum / n;
   const variance = nums.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
   const std = Math.sqrt(variance);
-  return { count: n, mean, std, min: Math.min(...nums), max: Math.max(...nums) };
+  return { count: n, mean, std, min: nums.reduce((a, b) => a < b ? a : b, Infinity), max: nums.reduce((a, b) => a > b ? a : b, -Infinity) };
 }
 
 function _aggMean(arr) {
@@ -168,7 +168,7 @@ function ChartTab({ results, subbands }) {
   }
 
   const meansForChart = sbNames.map(sb => statsBySubband[sb]?.mean ?? 0);
-  const maxAbs = Math.max(...meansForChart.map(Math.abs), Number.EPSILON);
+  const maxAbs = meansForChart.reduce((a, b) => Math.abs(b) > a ? Math.abs(b) : a, Number.EPSILON);
 
   const w = 800, h = 320;
   const groupW = (w - 80) / Math.max(sbNames.length, 1);
@@ -344,8 +344,8 @@ function HeatmapTab({ results, subbands, channels }) {
   }
 
   const flat = cellVals.flat().filter(v => v !== null);
-  const minV = Math.min(...flat);
-  const maxV = Math.max(...flat);
+  const minV = flat.reduce((a, b) => a < b ? a : b, Infinity);
+  const maxV = flat.reduce((a, b) => a > b ? a : b, -Infinity);
   const span = (maxV - minV) || 1;
 
   return (
@@ -423,8 +423,10 @@ function ScatterTab({ results }) {
 
   const xs = points.map(p => p.x);
   const ys = points.map(p => p.y);
-  const xMin = Math.min(...xs), xMax = Math.max(...xs);
-  const yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const xMin = xs.reduce((a, b) => a < b ? a : b, Infinity);
+  const xMax = xs.reduce((a, b) => a > b ? a : b, -Infinity);
+  const yMin = ys.reduce((a, b) => a < b ? a : b, Infinity);
+  const yMax = ys.reduce((a, b) => a > b ? a : b, -Infinity);
   const norm = (v, lo, hi) => hi === lo ? 0.5 : (v - lo) / (hi - lo);
 
   const sbColors = ['#5B65DC', '#7B83E5', '#4A53C0', '#8E96EE', '#3A45A8', '#A1A7F2', '#6F3D9E', '#B07B1F'];
@@ -492,7 +494,7 @@ function ScatterTab({ results }) {
 }
 
 // ===================== DATA TABLE =====================
-function DataTableTab({ results, subbands, onDownloadExcel }) {
+function DataTableTab({ results, subbands, onDownloadExcel, exporting }) {
   const allRecords = results?.records || [];
   const [page, setPage] = useStateBT(0);
   const [taskFilter, setTaskFilter] = useStateBT('all');
@@ -537,8 +539,8 @@ function DataTableTab({ results, subbands, onDownloadExcel }) {
           <button className="btn btn-secondary" onClick={() => window.downloadCSV(filtered, `batch_records_${Date.now()}.csv`)}>
             <Icon.Download /> CSV
           </button>
-          <button className="btn btn-primary" onClick={onDownloadExcel}>
-            <Icon.Download /> Excel
+          <button className="btn btn-primary" onClick={onDownloadExcel} disabled={exporting}>
+            <Icon.Download /> {exporting ? 'Generating...' : 'Excel'}
           </button>
         </div>
         <div className="table-wrap" style={{ overflowX: 'auto' }}>
@@ -616,4 +618,118 @@ function RingkasanTab({ results, scanMeta }) {
   );
 }
 
-Object.assign(window, { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab });
+// ===================== ENCODING TAB =====================
+function EncodingTab({ results, onDownloadEncoding }) {
+  const enc = results?.encoding_records || [];
+  const [taskF, setTaskF] = useStateBT('all');
+  const [sbF, setSbF] = useStateBT('all');
+  const [chF, setChF] = useStateBT('all');
+  const [page, setPage] = useStateBT(0);
+  const pageSize = 50;
+
+  if (enc.length === 0) {
+    return _emptyTab('Belum ada encoding', 'Proses batch dengan mode Chunk untuk melihat chain encoding.');
+  }
+
+  const tasks    = _uniqueNonEmpty(enc.map(r => r.task));
+  const subbands = _uniqueNonEmpty(enc.map(r => r.subband));
+  const channels = _uniqueNonEmpty(enc.map(r => r.channel));
+
+  // detect chain feature columns (chain_mav_sequence, chain_mav_ratio, etc.)
+  const firstRow = enc[0] || {};
+  const chainFeats = Array.from(new Set(
+    Object.keys(firstRow)
+      .filter(k => k.endsWith('_sequence'))
+      .map(k => k.replace('_sequence', '').replace('chain_', ''))
+  ));
+
+  const filtered = enc.filter(r =>
+    (taskF === 'all' || r.task === taskF) &&
+    (sbF   === 'all' || r.subband === sbF) &&
+    (chF   === 'all' || r.channel === chF)
+  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = filtered.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+  const selStyle = { padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5 };
+
+  return (
+    <>
+      <div className="ctrl-bar">
+        <span className="chip-mini accent">Chain Encoding</span>
+        <select value={taskF} onChange={e => { setTaskF(e.target.value); setPage(0); }} style={selStyle}>
+          <option value="all">Task: All</option>
+          {tasks.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select value={sbF} onChange={e => { setSbF(e.target.value); setPage(0); }} style={selStyle}>
+          <option value="all">Subband: All</option>
+          {subbands.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={chF} onChange={e => { setChF(e.target.value); setPage(0); }} style={selStyle}>
+          <option value="all">Channel: All</option>
+          {channels.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <span className="spacer" />
+        <span className="chip-mini">{filtered.length} rows</span>
+        <button className="btn btn-secondary" onClick={onDownloadEncoding} disabled={enc.length === 0}>
+          <Icon.Download /> CSV
+        </button>
+      </div>
+      <div style={{ padding: '0 24px 24px' }}>
+        <div className="table-wrap">
+          <table className="dt">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Subject</th>
+                <th>Task</th>
+                <th>Channel</th>
+                <th>Subband</th>
+                {chainFeats.map(f => (
+                  <React.Fragment key={f}>
+                    <th>{f} sequence</th>
+                    <th className="num">{f} ratio</th>
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((r, i) => (
+                <tr key={i}>
+                  <td>{r.category ?? '-'}</td>
+                  <td>{r.subject ?? '-'}</td>
+                  <td>{r.task ?? '-'}</td>
+                  <td>{r.channel}</td>
+                  <td><span className="badge badge-accent">{r.subband}</span></td>
+                  {chainFeats.map(f => (
+                    <React.Fragment key={f}>
+                      <td style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11.5, letterSpacing: 1 }}>
+                        {r[`chain_${f}_sequence`] ?? '-'}
+                      </td>
+                      <td className="num">
+                        {r[`chain_${f}_ratio`] != null ? (r[`chain_${f}_ratio`] * 100).toFixed(1) + '%' : '-'}
+                      </td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              ))}
+              {pageRows.length === 0 && (
+                <tr><td colSpan={5 + chainFeats.length * 2} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
+                  Tidak ada data sesuai filter
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+          <div className="pagination">
+            <button className="chip chip-mini" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0}>‹ Prev</button>
+            <span>Hal <span className="page-label">{safePage + 1}</span> / {totalPages}</span>
+            <button className="chip chip-mini" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={safePage === totalPages - 1}>Next ›</button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+Object.assign(window, { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab, EncodingTab });
