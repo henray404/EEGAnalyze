@@ -52,6 +52,9 @@ window.Api = {
   singlePlotIca(file, opts) {
     return _postForm('/api/single/plot/ica', { file, ...opts });
   },
+  singleErd(file, opts) {
+    return _postForm('/api/single/erd', { file, ...opts });
+  },
 
   // ===== Batch =====
   batchScan(file) {

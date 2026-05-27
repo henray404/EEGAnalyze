@@ -98,12 +98,15 @@ def _resolve_features(feats_str: str) -> list:
         "mav": "mav", "variance": "variance", "std": "std",
         "band_power": "band_power", "relative_power": "relative_power",
         "peak_frequency": "peak_frequency",
+        "psd": "band_power", "erd": "band_power", "ers": "relative_power",
     }
-    return [
-        mapping[f.strip().lower()]
-        for f in feats_str.split(",")
-        if f.strip().lower() in mapping
-    ] or ["mav", "variance", "std"]
+    seen, result = set(), []
+    for f in feats_str.split(","):
+        key = f.strip().lower()
+        if key in mapping and mapping[key] not in seen:
+            seen.add(mapping[key])
+            result.append(mapping[key])
+    return result or ["mav", "variance", "std"]
 
 
 @router.post("/process")
@@ -127,6 +130,7 @@ async def process_batch(
     psd_fmin: float = Form(0.0),
     psd_fmax: float = Form(49.5),
     filter_categories: str = Form(""),
+    filter_scenarios: str = Form(""),
     filter_tasks: str = Form(""),
     filter_channels: str = Form(""),
     chunk_mode: str = Form("false"),
@@ -154,6 +158,7 @@ async def process_batch(
     selected_features = _resolve_features(features)
 
     cats_filter  = [c.strip() for c in filter_categories.split(",") if c.strip()]
+    scen_filter  = [s.strip() for s in filter_scenarios.split(",") if s.strip()]
     tasks_filter = [t.strip() for t in filter_tasks.split(",") if t.strip()]
     ch_filter    = [c.strip() for c in filter_channels.split(",") if c.strip()]
 
@@ -166,6 +171,10 @@ async def process_batch(
 
         # Skip file jika kategorinya tidak dipilih user
         if cats_filter and meta["category"] not in cats_filter:
+            continue
+
+        # Skip file jika skenarionya tidak dipilih user
+        if scen_filter and meta.get("scenario") not in scen_filter:
             continue
 
         loader = EEGLoader()

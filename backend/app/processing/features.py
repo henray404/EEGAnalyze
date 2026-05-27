@@ -155,8 +155,10 @@ class EEGFeatures:
             features = DEFAULT_FEATURES
 
         # --- Pre-compute PSD-based band power jika include_frequency ---
+        _freq_feats = {"band_power", "relative_power", "peak_frequency"}
+        _need_freq = include_frequency and (features is None or bool(_freq_feats & set(features)))
         psd_bp_map = {}  # (channel, subband) -> {band_power, relative_power, peak_frequency}
-        if include_frequency:
+        if _need_freq:
             ch_list = [ch for ch in channels if ch in df.columns]
             if ch_list and len(df) >= 8:
                 data = df[ch_list].values.T  # (n_channels, n_samples)
@@ -195,11 +197,11 @@ class EEGFeatures:
                         row[feat] = float(np.std(filtered))
 
                 # --- Frequency-domain features via PSD ---
-                if include_frequency:
+                if _need_freq:
                     bp = psd_bp_map.get((ch, sb_name), {})
-                    row["band_power"] = bp.get("band_power", 0.0)
-                    row["relative_power"] = bp.get("relative_power", 0.0)
-                    row["peak_frequency"] = bp.get("peak_frequency", 0.0)
+                    for f in ("band_power", "relative_power", "peak_frequency"):
+                        if features is None or f in features:
+                            row[f] = bp.get(f, 0.0)
 
                 rows.append(row)
 

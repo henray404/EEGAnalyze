@@ -59,12 +59,15 @@ def _resolve_features(feats_str: str) -> list:
         "mav": "mav", "variance": "variance", "std": "std",
         "band_power": "band_power", "relative_power": "relative_power",
         "peak_frequency": "peak_frequency",
+        "psd": "band_power", "erd": "band_power", "ers": "relative_power",
     }
-    return [
-        mapping[f.strip().lower()]
-        for f in feats_str.split(",")
-        if f.strip().lower() in mapping
-    ] or ["mav", "variance", "std"]
+    seen, result = set(), []
+    for f in feats_str.split(","):
+        key = f.strip().lower()
+        if key in mapping and mapping[key] not in seen:
+            seen.add(mapping[key])
+            result.append(mapping[key])
+    return result or ["mav", "variance", "std"]
 
 
 def _parse_csv_list(s: str) -> list:
@@ -299,6 +302,7 @@ async def process_single_file(
     chunk_mode: str = Form("false"),
     chunk_duration: float = Form(0.5),
     channels_filter: str = Form(""),
+    filter_tasks: str = Form(""),
 ):
     loader = EEGLoader()
     try:
@@ -314,6 +318,9 @@ async def process_single_file(
 
         df = loader.extract_dataframe()
         tasks = loader.get_task_list()
+        tasks_filter = _parse_csv_list(filter_tasks)
+        if tasks_filter:
+            tasks = [t for t in tasks if t in tasks_filter] or tasks
         all_channels = loader.channel_names
         ch_filter = _parse_csv_list(channels_filter)
         channels = [c for c in all_channels if not ch_filter or c in ch_filter]
@@ -357,6 +364,68 @@ async def process_single_file(
         raise
     except Exception as e:
         logger.exception("process_single_file failed")
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ============================================================== #
+#  POST /erd                                                      #
+# ============================================================== #
+
+@router.post("/erd")
+async def compute_erd_single(
+    file: UploadFile = File(...),
+    bp_low: float = Form(0.5),
+    bp_high: float = Form(49.0),
+    bp_order: int = Form(5),
+    use_notch: str = Form("false"),
+    notch_freq: float = Form(50.0),
+    use_car: str = Form("false"),
+    use_amplitude: str = Form("false"),
+    use_ica: str = Form("false"),
+    ica_method: str = Form("fastica"),
+    ica_n: Optional[int] = Form(None),
+    subbands: str = Form("delta,theta,alpha,beta,gamma"),
+    channels_filter: str = Form(""),
+    baseline_task: str = Form(""),
+    target_task: str = Form(""),
+):
+    if not baseline_task or not target_task:
+        raise HTTPException(status_code=400, detail="baseline_task dan target_task wajib diisi")
+
+    loader = EEGLoader()
+    try:
+        _load_uploaded_file(loader, file)
+        _apply_filters(
+            loader,
+            bp_low, bp_high, bp_order,
+            _to_bool(use_notch), notch_freq,
+            _to_bool(use_car), _to_bool(use_amplitude),
+            _to_bool(use_ica), ica_method, ica_n,
+        )
+
+        df = loader.extract_dataframe()
+        all_channels = loader.channel_names
+        ch_filter = _parse_csv_list(channels_filter)
+        channels = [c for c in all_channels if not ch_filter or c in ch_filter] or all_channels
+
+        selected_subbands = _resolve_subbands(subbands)
+
+        erd_df = EEGFeatures.compute_erd_ers_paired(
+            loader, df, channels, target_task,
+            subbands=selected_subbands,
+            baseline_task=baseline_task,
+        )
+
+        records = _sanitize_records(erd_df.to_dict(orient="records")) if not erd_df.empty else []
+        return JSONResponse(content={
+            "baseline_task": baseline_task,
+            "target_task": target_task,
+            "erd_records": records,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("compute_erd_single failed")
         raise HTTPException(status_code=422, detail=str(e))
 
 

@@ -55,6 +55,7 @@ function BatchPage() {
   const [scanMeta, setScanMeta] = useState(null); // {total_files, categories, subjects, scenarios, tasks, channels}
   const [uploadError, setUploadError] = useState(null);
   const [kategori, setKategori] = useState(['ALS', 'Normal']);
+  const [scenario, setScenario] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [subbands, setSubbands] = useState(['delta', 'theta', 'alpha', 'beta']);
   const [channels, setChannels] = useState([]);
@@ -100,6 +101,7 @@ function BatchPage() {
       setTasks(data.tasks || []);
       setChannels((data.channels || []).slice(0, 8));
       setKategori(data.categories || ['ALS', 'Normal']);
+      setScenario(data.scenarios || []);
       setScanned(true);
     } catch (e) {
       setUploadError(e.message || 'Gagal scan ZIP. Pastikan backend berjalan.');
@@ -144,6 +146,7 @@ function BatchPage() {
         chunk_mode: extractMode === 'chunk',
         chunk_duration: chunkDur,
         filter_categories: kategori.join(','),
+        filter_scenarios: scenario.join(','),
         filter_tasks: tasks.join(','),
         filter_channels: channels.join(','),
       });
@@ -270,6 +273,11 @@ function BatchPage() {
                         ))}</>
                       } />
                       <ScanRow label="Subjek" value={(scanMeta.subjects || []).length} />
+                      {(scanMeta.scenarios || []).length > 0 && (
+                        <ScanRow label="Scenario" wrapValue value={
+                          <>{(scanMeta.scenarios || []).map(s => <span key={s} className="chip-mini" style={{ marginRight: 4 }}>{s}</span>)}</>
+                        } />
+                      )}
                       <ScanRow label="Tasks" wrapValue value={
                         <>{(scanMeta.tasks || []).map(t => <span key={t} className="chip-mini" style={{ marginRight: 4 }}>{t}</span>)}</>
                       } />
@@ -300,6 +308,11 @@ function BatchPage() {
                 <FilterGroupB label="Kategori" counter={`${kategori.length}/${(scanMeta?.categories || ['ALS', 'Normal']).length}`}>
                   <ChipGroupB options={scanMeta?.categories || ['ALS', 'Normal']} value={kategori} onChange={setKategori} />
                 </FilterGroupB>
+                {(scanMeta?.scenarios || []).length > 0 && (
+                  <FilterGroupB label="Scenario" counter={`${scenario.length}/${(scanMeta?.scenarios || []).length}`}>
+                    <ChipGroupB options={scanMeta.scenarios} value={scenario} onChange={setScenario} />
+                  </FilterGroupB>
+                )}
                 <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length}`}>
                   <ChipGroupB options={allTasksBatch} value={tasks} onChange={setTasks} />
                 </FilterGroupB>
@@ -319,10 +332,10 @@ function BatchPage() {
                     )}
                   </div>
                 </FilterGroupB>
-                <FilterGroupB label="Fitur Statistik" counter={`${features.length}/5`}>
+                <FilterGroupB label="Fitur Statistik" counter={`${features.length}/6`}>
                   <ChipGroupB options={[
                     { id: 'mav', name: 'MAV' }, { id: 'variance', name: 'Variance' }, { id: 'std', name: 'STD' },
-                    { id: 'psd', name: 'PSD' }, { id: 'band_power', name: 'BandPower' },
+                    { id: 'band_power', name: 'Band Power' }, { id: 'relative_power', name: 'Rel. Power' }, { id: 'peak_frequency', name: 'Peak Freq' },
                   ]} value={features} onChange={setFeatures} />
                 </FilterGroupB>
               </div>

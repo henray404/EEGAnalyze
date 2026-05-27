@@ -161,6 +161,9 @@ function SingleFilePage() {
   const [extractMode, setExtractMode] = useState('full');
   const [chunkDur, setChunkDur] = useState(AppConfig.CHUNK_DEFAULT);
   const [features, setFeatures] = useState(['mav', 'variance', 'std']);
+  const [erdEnabled, setErdEnabled] = useState(false);
+  const [erdBaseline, setErdBaseline] = useState('');
+  const [erdTarget, setErdTarget] = useState('');
   const [subbandSel, setSubbandSel] = useState(['delta', 'theta', 'alpha', 'beta']);
   const [tab, setTab] = useState('raw');
 
@@ -203,6 +206,7 @@ function SingleFilePage() {
     chunk_mode: extractMode === 'chunk',
     chunk_duration: chunkDur,
     channels_filter: selectedChannels.join(','),
+    filter_tasks: flagFilter.join(','),
   });
 
   const handleUpload = async (f) => {
@@ -238,7 +242,27 @@ function SingleFilePage() {
     setResults(null);
     const ticker = setInterval(() => setProgress(p => Math.min(p + 2, 90)), 250);
     try {
-      const data = await Api.singleProcess(file, buildProcessOpts());
+      const opts = buildProcessOpts();
+      const data = await Api.singleProcess(file, opts);
+
+      if (erdEnabled && erdBaseline && erdTarget) {
+        try {
+          const erdData = await Api.singleErd(file, {
+            bp_low: opts.bp_low, bp_high: opts.bp_high, bp_order: opts.bp_order,
+            use_notch: opts.use_notch, notch_freq: opts.notch_freq,
+            use_car: opts.use_car, use_amplitude: opts.use_amplitude,
+            use_ica: opts.use_ica, ica_method: opts.ica_method, ica_n: opts.ica_n,
+            subbands: opts.subbands,
+            channels_filter: opts.channels_filter,
+            baseline_task: erdBaseline,
+            target_task: erdTarget,
+          });
+          data.erd_records = erdData.erd_records || [];
+        } catch {
+          data.erd_records = [];
+        }
+      }
+
       setResults(data);
       setDone(true);
       setTab('fitur');
@@ -572,15 +596,44 @@ function SingleFilePage() {
                   {[
                     { id: 'mav', label: 'MAV' },
                     { id: 'variance', label: 'Variance' },
-                    { id: 'psd', label: 'PSD' },
-                    { id: 'erd', label: 'ERD' },
-                    { id: 'bandpower', label: 'BandPower' },
+                    { id: 'std', label: 'STD' },
+                    { id: 'band_power', label: 'Band Power' },
+                    { id: 'relative_power', label: 'Rel. Power' },
+                    { id: 'peak_frequency', label: 'Peak Freq' },
                   ].map(f => (
                     <CheckPill key={f.id} checked={features.includes(f.id)} onClick={() => {
                       setFeatures(features.includes(f.id) ? features.filter(x => x !== f.id) : [...features, f.id]);
                     }}>{f.label}</CheckPill>
                   ))}
                 </div>
+                <div style={{ marginTop: 8 }}>
+                  <CheckPill checked={erdEnabled} onClick={() => setErdEnabled(!erdEnabled)}>ERD/ERS</CheckPill>
+                </div>
+                {erdEnabled && (() => {
+                  const taskOpts = meta?.annotations
+                    ? Array.from(new Set(meta.annotations.map(a => a.description)))
+                    : (results?.tasks || []);
+                  const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
+                  return (
+                    <div style={{ marginTop: 10, padding: '12px 14px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>ERD = (Task - Baseline) / Baseline × 100%</div>
+                      <div>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
+                        <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
+                          <option value="">-- pilih --</option>
+                          {taskOpts.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
+                        <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
+                          <option value="">-- pilih --</option>
+                          {taskOpts.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <div className="form-row">
                 <label>Subband</label>
@@ -669,6 +722,7 @@ function SingleFilePage() {
                   done={done} processing={processing}
                   results={results} error={apiError}
                   extractMode={extractMode} chunkDur={chunkDur}
+                  erdBaseline={erdBaseline} erdTarget={erdTarget}
                   onDownloadCSV={handleDownloadCSV}
                   onDownloadExcel={handleExportExcel}
                 />
@@ -921,7 +975,55 @@ function pickColumns(records) {
   return Object.keys(first);
 }
 
-function FiturTab({ done, processing, results, error, extractMode, chunkDur, onDownloadCSV, onDownloadExcel }) {
+function ErdTable({ records, baseline, target }) {
+  const subbands = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
+  const channels = Array.from(new Set(records.map(r => r.channel).filter(Boolean)));
+  return (
+    <div style={{ marginTop: 32 }}>
+      <div className="row-between mb-12">
+        <div>
+          <span style={{ fontWeight: 700, fontSize: 15 }}>ERD/ERS</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 10 }}>
+            Baseline: <strong>{baseline}</strong> → Target: <strong>{target}</strong>
+          </span>
+        </div>
+        <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `erd_${Date.now()}.csv`)}>
+          <Icon.Download /> CSV
+        </button>
+      </div>
+      <div className="table-wrap">
+        <table className="dt">
+          <thead>
+            <tr>
+              <th>Channel</th><th>Subband</th>
+              <th className="num">Baseline Power</th><th className="num">Task Power</th>
+              <th className="num">ERD/ERS (%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((r, i) => {
+              const pct = r.erd_ers_pct;
+              const isErd = pct < 0;
+              return (
+                <tr key={i}>
+                  <td>{r.channel}</td>
+                  <td><span className="badge badge-accent">{r.subband}</span></td>
+                  <td className="num">{fmtNum(r.baseline_power)}</td>
+                  <td className="num">{fmtNum(r.task_power)}</td>
+                  <td className="num" style={{ fontWeight: 700, color: isErd ? 'var(--danger)' : 'var(--success)' }}>
+                    {pct != null ? (pct > 0 ? '+' : '') + fmtNum(pct) + '%' : '-'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdBaseline, erdTarget, onDownloadCSV, onDownloadExcel }) {
   const [page, setPage] = useState(0);
   const [taskFilter, setTaskFilter] = useState('all');
   const [subbandFilter, setSubbandFilter] = useState('all');
@@ -1045,6 +1147,10 @@ function FiturTab({ done, processing, results, error, extractMode, chunkDur, onD
           <button className="chip chip-mini" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={safePage === totalPages - 1}>Next ›</button>
         </div>
       </div>
+
+      {(results.erd_records || []).length > 0 && (
+        <ErdTable records={results.erd_records} baseline={erdBaseline} target={erdTarget} />
+      )}
     </div>
   );
 }

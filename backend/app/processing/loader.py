@@ -116,7 +116,7 @@ class EEGLoader:
                 {
                     "onset": a["onset"],
                     "duration": a["duration"],
-                    "description": a["description"],
+                    "description": "Think_Acting" if a["description"] == "Thinking and Acting" else a["description"],
                 }
                 for a in annotations
             ],
