@@ -112,17 +112,19 @@ function ToggleRow({ on, onChange, label, bold }) {
   );
 }
 
-function Slider({ min = 0, max = 100, value, onChange, label, snapPoints }) {
-  const pct = ((value - min) / (max - min)) * 100;
+function Slider({ min = 0, max = 100, value, onChange, label, snapPoints, step = 0.01 }) {
   return (
     <div>
-      {label && <div className="row-between mb-12"><span style={{ fontSize: 12, fontWeight: 600 }}>{label}</span><span className="chip-mini accent">{value}</span></div>}
-      <div className="slider">
-        <div className="slider-track">
-          <div className="slider-fill" style={{ width: `${pct}%` }} />
-          <div className="slider-thumb" style={{ left: `${pct}%` }} />
-        </div>
-      </div>
+      {label && <div className="row-between mb-12"><span style={{ fontSize: 12, fontWeight: 600 }}>{label}</span><input type="number" min={min} max={max} step={step} value={value} onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= min && v <= max) onChange(v); }} style={{ width: 64, padding: '2px 8px', borderRadius: 999, border: '1.5px solid var(--accent)', background: 'var(--accent-tint)', color: 'var(--accent)', fontSize: 12, fontWeight: 700, textAlign: 'center' }} /></div>}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+      />
       {snapPoints && (
         <div className="row gap-8 mt-12" style={{ flexWrap: 'wrap' }}>
           {snapPoints.map(sp => (
@@ -258,8 +260,12 @@ function SingleFilePage() {
             target_task: erdTarget,
           });
           data.erd_records = erdData.erd_records || [];
-        } catch {
+          if (data.erd_records.length === 0) {
+            data.erd_error = `ERD kosong: tidak ditemukan pasangan "${erdBaseline}" → "${erdTarget}" yang berurutan dalam annotations. Pastikan kedua task ada di file dan urutannya benar.`;
+          }
+        } catch (erdErr) {
           data.erd_records = [];
+          data.erd_error = erdErr.message || 'ERD gagal diproses';
         }
       }
 
@@ -722,6 +728,7 @@ function SingleFilePage() {
                   done={done} processing={processing}
                   results={results} error={apiError}
                   extractMode={extractMode} chunkDur={chunkDur}
+                  erdEnabled={erdEnabled}
                   erdBaseline={erdBaseline} erdTarget={erdTarget}
                   onDownloadCSV={handleDownloadCSV}
                   onDownloadExcel={handleExportExcel}
@@ -1023,7 +1030,7 @@ function ErdTable({ records, baseline, target }) {
   );
 }
 
-function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdBaseline, erdTarget, onDownloadCSV, onDownloadExcel }) {
+function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdEnabled, erdBaseline, erdTarget, onDownloadCSV, onDownloadExcel }) {
   const [page, setPage] = useState(0);
   const [taskFilter, setTaskFilter] = useState('all');
   const [subbandFilter, setSubbandFilter] = useState('all');
@@ -1148,8 +1155,14 @@ function FiturTab({ done, processing, results, error, extractMode, chunkDur, erd
         </div>
       </div>
 
-      {(results.erd_records || []).length > 0 && (
-        <ErdTable records={results.erd_records} baseline={erdBaseline} target={erdTarget} />
+      {erdEnabled && (
+        (results.erd_records || []).length > 0
+          ? <ErdTable records={results.erd_records} baseline={erdBaseline} target={erdTarget} />
+          : (
+            <div style={{ marginTop: 32, padding: '12px 16px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12.5 }}>
+              <strong>ERD/ERS:</strong> {results.erd_error || 'Tidak ada data ERD. Pastikan baseline dan target task sudah dipilih dan ada di file.'}
+            </div>
+          )
       )}
     </div>
   );

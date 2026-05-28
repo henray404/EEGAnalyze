@@ -135,6 +135,9 @@ async def process_batch(
     filter_channels: str = Form(""),
     chunk_mode: str = Form("false"),
     chunk_duration: float = Form(0.5),
+    erd_enabled: str = Form("false"),
+    erd_baseline_task: str = Form(""),
+    erd_target_task: str = Form(""),
 ):
     """Upload ZIP berisi file EDF + config, proses semua, return features per record.
 
@@ -164,6 +167,7 @@ async def process_batch(
 
     all_records = []
     all_encoding = []
+    all_erd_records = []
     errors = []
 
     for edf_path in edf_files:
@@ -247,6 +251,19 @@ async def process_batch(
                 except Exception:
                     pass
 
+            if to_bool(erd_enabled) and erd_baseline_task and erd_target_task:
+                try:
+                    erd_df = EEGFeatures.compute_erd_ers_paired(
+                        loader, df, channels, erd_target_task,
+                        subbands=selected_subbands,
+                        baseline_task=erd_baseline_task,
+                    )
+                    if not erd_df.empty:
+                        for rec in erd_df.to_dict(orient="records"):
+                            all_erd_records.append({**meta, "filename": edf_path, **rec})
+                except Exception:
+                    pass
+
         except Exception as e:
             errors.append({"file": edf_path, "error": str(e)})
             continue
@@ -260,6 +277,7 @@ async def process_batch(
     return JSONResponse(content={
         "records": all_records,
         "encoding_records": all_encoding,
+        "erd_records": all_erd_records,
         "total_files": len(edf_files),
         "processed_files": len(set(r["filename"] for r in all_records)),
         "errors": errors,

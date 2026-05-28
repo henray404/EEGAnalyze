@@ -482,36 +482,27 @@ class EEGFeatures:
     @staticmethod
     def compute_erd_ers_paired(loader, df, channels, task_name,
                                 subbands=None, baseline_task="Resting"):
-        """Hitung ERD/ERS menggunakan pasangan Restingâ†’Task yang berurutan.
+        """Hitung ERD/ERS dengan rata-rata semua occurrence baseline dan task.
 
-        Mencari occurrence Resting yang langsung diikuti oleh task_name
-        dalam urutan temporal annotations.  Hanya menggunakan pasangan
-        pertama yang valid (1 Resting + 1 Task).
+        ERD/ERS = ((avg_power_task - avg_power_baseline) / avg_power_baseline) x 100%
 
-        ERD/ERS = ((Power_Task - Power_Baseline) / Power_Baseline) Ã— 100%
-
-        Hanya menghitung dari **band power** (bukan fitur time-domain).
+        Menggunakan semua occurrence baseline_task dan task_name yang ada di file,
+        tidak bergantung pada urutan annotations. Power tiap occurrence dirata-rata
+        sebelum menghitung ERD.
 
         Parameters
         ----------
         loader : EEGLoader
-            Loader instance (sudah load file EDF).
         df : pd.DataFrame
-            DataFrame sinyal (kolom per channel + time + marker).
         channels : list[str]
-            Nama channel yang akan dihitung.
         task_name : str
-            Nama task target (misal 'Thinking').
         subbands : dict | None
-            Subband definitions.
         baseline_task : str
-            Nama task baseline (default: 'Resting').
 
         Returns
         -------
         pd.DataFrame  Kolom: task, channel, subband, baseline_power,
                        task_power, erd_ers_pct.
-                       Kosong jika tidak ditemukan pasangan valid.
         """
         if subbands is None:
             subbands = DEFAULT_SUBBANDS
@@ -520,50 +511,40 @@ class EEGFeatures:
         if not occurrences:
             return pd.DataFrame()
 
-        # Cari pasangan baseline_task â†’ task_name yang berurutan
-        pair = None
-        for i in range(len(occurrences) - 1):
-            curr = occurrences[i]
-            nxt = occurrences[i + 1]
-            if curr["task"] == baseline_task and nxt["task"] == task_name:
-                pair = (curr["occurrence"], nxt["occurrence"])
-                break
+        baseline_occs = [o for o in occurrences if o["task"] == baseline_task]
+        task_occs = [o for o in occurrences if o["task"] == task_name]
 
-        if pair is None:
-            return pd.DataFrame()
-
-        baseline_occ, task_occ = pair
-
-        # Ekstrak segment untuk baseline dan task
-        seg_baseline = loader.extract_occurrence_segment(
-            df, baseline_task, baseline_occ
-        )
-        seg_task = loader.extract_occurrence_segment(
-            df, task_name, task_occ
-        )
-
-        if seg_baseline.empty or seg_task.empty:
-            return pd.DataFrame()
-        if len(seg_baseline) < 4 or len(seg_task) < 4:
+        if not baseline_occs or not task_occs:
             return pd.DataFrame()
 
         sfreq = loader.sfreq
         rows = []
 
         for ch in channels:
-            if ch not in seg_baseline.columns or ch not in seg_task.columns:
+            baseline_signals = []
+            for occ in baseline_occs:
+                seg = loader.extract_occurrence_segment(df, baseline_task, occ["occurrence"])
+                if not seg.empty and ch in seg.columns and len(seg) >= 4:
+                    baseline_signals.append(seg[ch].values)
+
+            task_signals = []
+            for occ in task_occs:
+                seg = loader.extract_occurrence_segment(df, task_name, occ["occurrence"])
+                if not seg.empty and ch in seg.columns and len(seg) >= 4:
+                    task_signals.append(seg[ch].values)
+
+            if not baseline_signals or not task_signals:
                 continue
 
-            sig_base = seg_baseline[ch].values
-            sig_task = seg_task[ch].values
-
             for sb_name, (low, high) in subbands.items():
-                power_base = EEGFeatures.compute_band_power(
-                    sig_base, sfreq, low, high
-                )
-                power_task = EEGFeatures.compute_band_power(
-                    sig_task, sfreq, low, high
-                )
+                power_base = float(np.mean([
+                    EEGFeatures.compute_band_power(sig, sfreq, low, high)
+                    for sig in baseline_signals
+                ]))
+                power_task = float(np.mean([
+                    EEGFeatures.compute_band_power(sig, sfreq, low, high)
+                    for sig in task_signals
+                ]))
 
                 erd_ers = (
                     ((power_task - power_base) / power_base) * 100.0

@@ -1,5 +1,5 @@
 /* global React, Icon */
-const { useState, useRef: useRefB } = React;
+const { useState, useRef: useRefB, useCallback, useEffect } = React;
 const Api = window.Api;
 const AppConfigB = window.AppConfig;
 const { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab, EncodingTab } = window;
@@ -48,6 +48,74 @@ function ToggleRowB({ on, onChange, label, bold }) {
   );
 }
 
+function SliderB({ min = 0, max = 1, value, onChange, step = 0.01, snapPoints }) {
+  const trackRef = useRefB(null);
+  const dragging = useRefB(false);
+
+  const clamp = (v) => {
+    const snapped = step ? Math.round(v / step) * step : v;
+    return Math.min(max, Math.max(min, parseFloat(snapped.toFixed(10))));
+  };
+
+  const posToValue = useCallback((clientX) => {
+    const rect = trackRef.current.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return clamp(min + ratio * (max - min));
+  }, [min, max, step]);
+
+  const onTrackPointerDown = (e) => {
+    e.preventDefault();
+    dragging.current = true;
+    trackRef.current.setPointerCapture(e.pointerId);
+    onChange(posToValue(e.clientX));
+  };
+
+  const onPointerMove = (e) => {
+    if (!dragging.current) return;
+    onChange(posToValue(e.clientX));
+  };
+
+  const onPointerUp = () => { dragging.current = false; };
+
+  const pct = ((value - min) / (max - min)) * 100;
+
+  return (
+    <div>
+      <div
+        ref={trackRef}
+        onPointerDown={onTrackPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        style={{ position: 'relative', height: 24, display: 'flex', alignItems: 'center', cursor: 'pointer', touchAction: 'none' }}
+      >
+        <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 999, position: 'relative' }}>
+          <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, width: `${pct}%`, background: 'var(--accent)', borderRadius: 999 }} />
+          <div style={{
+            position: 'absolute', top: '50%', left: `${pct}%`,
+            width: 20, height: 20, borderRadius: '50%',
+            background: '#fff', border: '2px solid var(--accent)',
+            transform: 'translate(-50%, -50%)',
+            boxShadow: '0 2px 6px rgba(91,101,220,0.25)',
+            cursor: 'grab',
+          }} />
+        </div>
+      </div>
+      {snapPoints && (
+        <div className="row gap-8 mt-12" style={{ flexWrap: 'wrap' }}>
+          {snapPoints.map(sp => (
+            <button key={sp}
+              className={`chip-mini ${sp === value ? 'accent' : ''}`}
+              onClick={() => onChange(sp)}
+              style={{ cursor: 'pointer' }}>
+              {sp} s
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BatchPage() {
   const [file, setFile] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -72,6 +140,9 @@ function BatchPage() {
   const [icaMethod, setIcaMethod] = useState('fastica');
   const [extractMode, setExtractMode] = useState('chunk');
   const [chunkDur, setChunkDur] = useState(0.5);
+  const [erdEnabled, setErdEnabled] = useState(false);
+  const [erdBaseline, setErdBaseline] = useState('');
+  const [erdTarget, setErdTarget] = useState('');
   const [tab, setTab] = useState('chart');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -145,6 +216,9 @@ function BatchPage() {
         include_frequency: true,
         chunk_mode: extractMode === 'chunk',
         chunk_duration: chunkDur,
+        erd_enabled: erdEnabled,
+        erd_baseline_task: erdBaseline,
+        erd_target_task: erdTarget,
         filter_categories: kategori.join(','),
         filter_scenarios: scenario.join(','),
         filter_tasks: tasks.join(','),
@@ -338,6 +412,32 @@ function BatchPage() {
                     { id: 'band_power', name: 'Band Power' }, { id: 'relative_power', name: 'Rel. Power' }, { id: 'peak_frequency', name: 'Peak Freq' },
                   ]} value={features} onChange={setFeatures} />
                 </FilterGroupB>
+                <div className="form-row">
+                  <label>ERD/ERS</label>
+                  <ToggleRowB on={erdEnabled} onChange={v => { setErdEnabled(v); if (!v) { setErdBaseline(''); setErdTarget(''); } }} label="Hitung ERD/ERS" />
+                  {erdEnabled && (() => {
+                    const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
+                    return (
+                      <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ERD = (Task - Baseline) / Baseline × 100%</div>
+                        <div>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
+                          <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
+                            <option value="">-- pilih --</option>
+                            {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
+                          <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
+                            <option value="">-- pilih --</option>
+                            {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
             )}
 
@@ -408,19 +508,15 @@ function BatchPage() {
                 </div>
                 {extractMode === 'chunk' && (
                   <div className="form-row">
-                    <label>Durasi Chunk: <strong>{chunkDur.toFixed(2)} s</strong></label>
-                    <input
-                      type="range"
-                      min="0.05" max="2" step="0.05"
-                      value={chunkDur}
-                      onChange={e => setChunkDur(parseFloat(e.target.value))}
-                      style={{ width: '100%', accentColor: 'var(--accent)' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                      <span>0.05 s</span>
-                      <span>1.00 s</span>
-                      <span>2.00 s</span>
+                    <div className="row-between">
+                      <label style={{ marginBottom: 0 }}>Durasi Chunk</label>
+                      <span className="chip-mini accent">{chunkDur.toFixed(2)} s</span>
                     </div>
+                    <SliderB
+                      min={0.05} max={2.0} step={0.05}
+                      value={chunkDur} onChange={setChunkDur}
+                      snapPoints={[0.25, 0.5, 1.0, 1.5, 2.0]}
+                    />
                   </div>
                 )}
               </div>
@@ -453,6 +549,7 @@ function BatchPage() {
                 { id: 'heatmap',  label: 'Heatmap' },
                 { id: 'scatter',  label: 'Scatter' },
                 ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
+                ...(erdEnabled ? [{ id: 'erd', label: 'ERD/ERS' }] : []),
                 { id: 'data',     label: 'Data Table' },
                 { id: 'sum',      label: 'Ringkasan' },
               ].map(t => (
@@ -490,6 +587,7 @@ function BatchPage() {
                 {tab === 'heatmap'  && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
                 {tab === 'scatter'  && <ScatterTab results={results} />}
                 {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} />}
+                {tab === 'erd'      && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
                 {tab === 'data'     && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
                 {tab === 'sum'      && <RingkasanTab results={results} scanMeta={scanMeta} />}
               </>
@@ -594,6 +692,114 @@ function BatchResultStrip({ results, totalSubjects }) {
       <div className="card card-pad" style={{ padding: 18 }}>
         <div className="label" style={labelStyle}>CHANNELS × SUBBANDS</div>
         <div style={valStyle}>{channelCount} × {subbandCount}</div>
+      </div>
+    </div>
+  );
+}
+
+function BatchErdTab({ results, baseline, target }) {
+  const records = results?.erd_records || [];
+  const [page, setPage] = useState(0);
+  const [catFilter, setCatFilter] = useState('all');
+  const [sbFilter, setSbFilter] = useState('all');
+  const pageSize = 25;
+
+  if (records.length === 0) {
+    return (
+      <div style={{ padding: 24 }}>
+        <div style={{ padding: '12px 16px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12.5 }}>
+          Tidak ada data ERD. Pastikan baseline dan target task ada di semua file yang diproses.
+        </div>
+      </div>
+    );
+  }
+
+  const cats = Array.from(new Set(records.map(r => r.category).filter(Boolean)));
+  const sbs = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
+
+  const filtered = records.filter(r =>
+    (catFilter === 'all' || r.category === catFilter) &&
+    (sbFilter === 'all' || r.subband === sbFilter),
+  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = filtered.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+  const fmtN = (v) => {
+    if (v === null || v === undefined) return '-';
+    const n = typeof v === 'number' ? v : parseFloat(v);
+    if (isNaN(n)) return String(v);
+    if (Math.abs(n) < 0.001 && n !== 0) return n.toExponential(2);
+    return n.toFixed(4);
+  };
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div className="row-between mb-16">
+        <div>
+          <span style={{ fontWeight: 700, fontSize: 15 }}>ERD/ERS Batch</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 10 }}>
+            Baseline: <strong>{baseline}</strong> → Target: <strong>{target}</strong>
+          </span>
+          <span className="chip-mini" style={{ marginLeft: 10 }}>{records.length} records</span>
+        </div>
+        <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `batch_erd_${Date.now()}.csv`)}>
+          <Icon.Download /> CSV
+        </button>
+      </div>
+      <div className="row mb-16" style={{ gap: 8 }}>
+        <select className="fpill" value={catFilter} onChange={e => { setCatFilter(e.target.value); setPage(0); }}
+          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)' }}>
+          <option value="all">Kategori: All</option>
+          {cats.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="fpill" value={sbFilter} onChange={e => { setSbFilter(e.target.value); setPage(0); }}
+          style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)' }}>
+          <option value="all">Subband: All</option>
+          {sbs.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      <div className="table-wrap">
+        <table className="dt">
+          <thead>
+            <tr>
+              <th>Kategori</th><th>Subject</th><th>File</th>
+              <th>Channel</th><th>Subband</th>
+              <th className="num">Baseline Power</th>
+              <th className="num">Task Power</th>
+              <th className="num">ERD/ERS (%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((r, i) => {
+              const pct = r.erd_ers_pct;
+              const isErd = pct < 0;
+              const fname = (r.filename || '').split('/').pop();
+              return (
+                <tr key={safePage * pageSize + i}>
+                  <td><span className={`badge ${r.category === 'ALS' ? 'badge-als' : r.category === 'Normal' ? 'badge-normal' : 'badge-accent'}`}>{r.category}</span></td>
+                  <td>{r.subject || '-'}</td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{fname}</td>
+                  <td>{r.channel}</td>
+                  <td><span className="badge badge-accent">{r.subband}</span></td>
+                  <td className="num">{fmtN(r.baseline_power)}</td>
+                  <td className="num">{fmtN(r.task_power)}</td>
+                  <td className="num" style={{ fontWeight: 700, color: isErd ? 'var(--danger)' : 'var(--success)' }}>
+                    {pct != null ? (pct > 0 ? '+' : '') + fmtN(pct) + '%' : '-'}
+                  </td>
+                </tr>
+              );
+            })}
+            {pageRows.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>Tidak ada data sesuai filter</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div className="pagination">
+          <button className="chip chip-mini" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0}>‹ Prev</button>
+          <span>Hal <span className="page-label">{safePage + 1}</span> / {totalPages}</span>
+          <button className="chip chip-mini" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={safePage === totalPages - 1}>Next ›</button>
+        </div>
       </div>
     </div>
   );
