@@ -994,9 +994,17 @@ function ErdTable({ records, baseline, target }) {
             Baseline: <strong>{baseline}</strong> → Target: <strong>{target}</strong>
           </span>
         </div>
-        <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `erd_${Date.now()}.csv`)}>
-          <Icon.Download /> CSV
-        </button>
+        <div className="row gap-8">
+          <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `erd_${Date.now()}.csv`)}>
+            <Icon.Download /> CSV
+          </button>
+          <button className="btn btn-primary" onClick={async () => {
+            const fname = `erd_${Date.now()}.xlsx`;
+            try { const blob = await window.Api.exportExcel([{ name: 'ERD_ERS', records }], fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+          }}>
+            <Icon.Download /> Excel
+          </button>
+        </div>
       </div>
       <div className="table-wrap">
         <table className="dt">

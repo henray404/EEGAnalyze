@@ -743,9 +743,17 @@ function BatchErdTab({ results, baseline, target }) {
           </span>
           <span className="chip-mini" style={{ marginLeft: 10 }}>{records.length} records</span>
         </div>
-        <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `batch_erd_${Date.now()}.csv`)}>
-          <Icon.Download /> CSV
-        </button>
+        <div className="row gap-8">
+          <button className="btn btn-secondary" onClick={() => window.downloadCSV(records, `batch_erd_${Date.now()}.csv`)}>
+            <Icon.Download /> CSV
+          </button>
+          <button className="btn btn-primary" onClick={async () => {
+            const fname = `batch_erd_${Date.now()}.xlsx`;
+            try { const blob = await window.Api.exportExcel([{ name: 'ERD_ERS', records }], fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+          }}>
+            <Icon.Download /> Excel
+          </button>
+        </div>
       </div>
       <div className="row mb-16" style={{ gap: 8 }}>
         <select className="fpill" value={catFilter} onChange={e => { setCatFilter(e.target.value); setPage(0); }}
