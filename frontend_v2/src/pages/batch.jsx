@@ -768,6 +768,7 @@ function BatchErdTab({ results, baseline, target }) {
               <th className="num">Baseline Power</th>
               <th className="num">Task Power</th>
               <th className="num">ERD/ERS (%)</th>
+              <th>Tipe</th>
             </tr>
           </thead>
           <tbody>
@@ -786,6 +787,9 @@ function BatchErdTab({ results, baseline, target }) {
                   <td className="num">{fmtN(r.task_power)}</td>
                   <td className="num" style={{ fontWeight: 700, color: isErd ? 'var(--danger)' : 'var(--success)' }}>
                     {pct != null ? (pct > 0 ? '+' : '') + fmtN(pct) + '%' : '-'}
+                  </td>
+                  <td>
+                    {pct != null ? <span className="badge" style={{ background: isErd ? 'var(--danger-tint)' : 'var(--success-tint)', color: isErd ? 'var(--danger)' : 'var(--success)', fontWeight: 700 }}>{isErd ? 'ERD' : 'ERS'}</span> : '-'}
                   </td>
                 </tr>
               );
