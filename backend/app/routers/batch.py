@@ -253,11 +253,19 @@ async def process_batch(
 
             if to_bool(erd_enabled) and erd_baseline_task and erd_target_task:
                 try:
-                    erd_df = EEGFeatures.compute_erd_ers_paired(
-                        loader, df, channels, erd_target_task,
-                        subbands=selected_subbands,
-                        baseline_task=erd_baseline_task,
-                    )
+                    if to_bool(chunk_mode):
+                        erd_df = EEGFeatures.compute_erd_ers_paired_chunked(
+                            loader, df, channels, erd_target_task,
+                            subbands=selected_subbands,
+                            baseline_task=erd_baseline_task,
+                            chunk_duration=chunk_duration,
+                        )
+                    else:
+                        erd_df = EEGFeatures.compute_erd_ers_paired(
+                            loader, df, channels, erd_target_task,
+                            subbands=selected_subbands,
+                            baseline_task=erd_baseline_task,
+                        )
                     if not erd_df.empty:
                         for rec in erd_df.to_dict(orient="records"):
                             all_erd_records.append({**meta, "filename": edf_path, **rec})

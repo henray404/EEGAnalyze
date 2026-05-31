@@ -566,6 +566,104 @@ class EEGFeatures:
         return pd.DataFrame(rows)
 
     @staticmethod
+    def compute_erd_ers_paired_chunked(loader, df, channels, task_name,
+                                       subbands=None, baseline_task="Resting",
+                                       chunk_duration=0.5):
+        """Hitung ERD/ERS per chunk dalam target task.
+
+        Baseline tetap dirata-rata jadi 1 nilai power per (channel, subband)
+        seperti ``compute_erd_ers_paired``. Target task dipotong menjadi chunk
+        non-overlapping sepanjang ``chunk_duration`` detik. Tiap chunk dibanding
+        ke baseline avg sehingga menghasilkan ERD time-course dalam target task.
+
+        ERD/ERS = ((power_task_chunk - avg_power_baseline) / avg_power_baseline) x 100%
+
+        Power chunk dengan index sama dirata-rata lintas semua occurrence target.
+        Chunk terakhir yang tidak penuh dibuang. Occurrence yang menghasilkan
+        jumlah chunk berbeda tetap dipakai sebatas index chunk yang tersedia.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, chunk, baseline_power,
+                       task_power, erd_ers_pct.
+        """
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+
+        occurrences = loader.get_task_occurrences()
+        if not occurrences:
+            return pd.DataFrame()
+
+        baseline_occs = [o for o in occurrences if o["task"] == baseline_task]
+        task_occs = [o for o in occurrences if o["task"] == task_name]
+
+        if not baseline_occs or not task_occs:
+            return pd.DataFrame()
+
+        sfreq = loader.sfreq
+        chunk_samples = int(chunk_duration * sfreq)
+        if chunk_samples < 4:
+            return pd.DataFrame()
+
+        rows = []
+
+        for ch in channels:
+            # --- Baseline: avg power per subband (whole segment) ---
+            baseline_signals = []
+            for occ in baseline_occs:
+                seg = loader.extract_occurrence_segment(df, baseline_task, occ["occurrence"])
+                if not seg.empty and ch in seg.columns and len(seg) >= 4:
+                    baseline_signals.append(seg[ch].values)
+
+            if not baseline_signals:
+                continue
+
+            # --- Target: chunk tiap occurrence ---
+            # task_chunk_powers[sb_name][chunk_idx] = list power lintas occurrence
+            task_chunk_powers = {sb: {} for sb in subbands}
+            for occ in task_occs:
+                seg = loader.extract_occurrence_segment(df, task_name, occ["occurrence"])
+                if seg.empty or ch not in seg.columns:
+                    continue
+                signal = seg[ch].values
+                n_chunks = len(signal) // chunk_samples
+                for ci in range(n_chunks):
+                    chunk_signal = signal[ci * chunk_samples:(ci + 1) * chunk_samples]
+                    for sb_name, (low, high) in subbands.items():
+                        power = EEGFeatures.compute_band_power(
+                            chunk_signal, sfreq, low, high
+                        )
+                        task_chunk_powers[sb_name].setdefault(ci, []).append(power)
+
+            for sb_name, (low, high) in subbands.items():
+                power_base = float(np.mean([
+                    EEGFeatures.compute_band_power(sig, sfreq, low, high)
+                    for sig in baseline_signals
+                ]))
+
+                chunk_map = task_chunk_powers[sb_name]
+                for ci in sorted(chunk_map.keys()):
+                    power_task = float(np.mean(chunk_map[ci]))
+                    erd_ers = (
+                        ((power_task - power_base) / power_base) * 100.0
+                        if power_base != 0 else 0.0
+                    )
+                    rows.append({
+                        "task": task_name,
+                        "channel": ch,
+                        "subband": sb_name,
+                        "chunk": int(ci),
+                        "baseline_power": power_base,
+                        "task_power": power_task,
+                        "erd_ers_pct": erd_ers,
+                    })
+
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(rows)
+
+    @staticmethod
     def compute_band_ratios(features_df, ratios=None):
         """Hitung rasio power antar subband.
 

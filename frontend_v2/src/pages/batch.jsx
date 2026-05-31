@@ -716,6 +716,7 @@ function BatchErdTab({ results, baseline, target }) {
 
   const cats = Array.from(new Set(records.map(r => r.category).filter(Boolean)));
   const sbs = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
+  const hasChunk = records.some(r => r.chunk != null);
 
   const filtered = records.filter(r =>
     (catFilter === 'all' || r.category === catFilter) &&
@@ -773,6 +774,7 @@ function BatchErdTab({ results, baseline, target }) {
             <tr>
               <th>Kategori</th><th>Subject</th><th>File</th>
               <th>Channel</th><th>Subband</th>
+              {hasChunk && <th className="num">Chunk</th>}
               <th className="num">Baseline Power</th>
               <th className="num">Task Power</th>
               <th className="num">ERD/ERS (%)</th>
@@ -791,6 +793,7 @@ function BatchErdTab({ results, baseline, target }) {
                   <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{fname}</td>
                   <td>{r.channel}</td>
                   <td><span className="badge badge-accent">{r.subband}</span></td>
+                  {hasChunk && <td className="num">{r.chunk}</td>}
                   <td className="num">{fmtN(r.baseline_power)}</td>
                   <td className="num">{fmtN(r.task_power)}</td>
                   <td className="num" style={{ fontWeight: 700, color: isErd ? 'var(--danger)' : 'var(--success)' }}>
@@ -803,7 +806,7 @@ function BatchErdTab({ results, baseline, target }) {
               );
             })}
             {pageRows.length === 0 && (
-              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>Tidak ada data sesuai filter</td></tr>
+              <tr><td colSpan={hasChunk ? 10 : 9} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>Tidak ada data sesuai filter</td></tr>
             )}
           </tbody>
         </table>

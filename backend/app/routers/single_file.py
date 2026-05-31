@@ -388,6 +388,8 @@ async def compute_erd_single(
     channels_filter: str = Form(""),
     baseline_task: str = Form(""),
     target_task: str = Form(""),
+    chunk_mode: str = Form("false"),
+    chunk_duration: float = Form(0.5),
 ):
     if not baseline_task or not target_task:
         raise HTTPException(status_code=400, detail="baseline_task dan target_task wajib diisi")
@@ -410,16 +412,28 @@ async def compute_erd_single(
 
         selected_subbands = _resolve_subbands(subbands)
 
-        erd_df = EEGFeatures.compute_erd_ers_paired(
-            loader, df, channels, target_task,
-            subbands=selected_subbands,
-            baseline_task=baseline_task,
-        )
+        if _to_bool(chunk_mode):
+            erd_df = EEGFeatures.compute_erd_ers_paired_chunked(
+                loader, df, channels, target_task,
+                subbands=selected_subbands,
+                baseline_task=baseline_task,
+                chunk_duration=chunk_duration,
+            )
+            erd_mode = "chunk"
+        else:
+            erd_df = EEGFeatures.compute_erd_ers_paired(
+                loader, df, channels, target_task,
+                subbands=selected_subbands,
+                baseline_task=baseline_task,
+            )
+            erd_mode = "full"
 
         records = _sanitize_records(erd_df.to_dict(orient="records")) if not erd_df.empty else []
         return JSONResponse(content={
             "baseline_task": baseline_task,
             "target_task": target_task,
+            "erd_mode": erd_mode,
+            "chunk_duration": chunk_duration if erd_mode == "chunk" else None,
             "erd_records": records,
         })
     except HTTPException:

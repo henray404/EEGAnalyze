@@ -258,6 +258,8 @@ function SingleFilePage() {
             channels_filter: opts.channels_filter,
             baseline_task: erdBaseline,
             target_task: erdTarget,
+            chunk_mode: extractMode === 'chunk',
+            chunk_duration: chunkDur,
           });
           data.erd_records = erdData.erd_records || [];
           if (data.erd_records.length === 0) {
@@ -985,6 +987,13 @@ function pickColumns(records) {
 function ErdTable({ records, baseline, target }) {
   const subbands = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
   const channels = Array.from(new Set(records.map(r => r.channel).filter(Boolean)));
+  const hasChunk = records.some(r => r.chunk != null);
+  const sorted = hasChunk
+    ? [...records].sort((a, b) =>
+        (a.channel || '').localeCompare(b.channel || '') ||
+        (a.subband || '').localeCompare(b.subband || '') ||
+        (a.chunk - b.chunk))
+    : records;
   return (
     <div style={{ marginTop: 32 }}>
       <div className="row-between mb-12">
@@ -1011,18 +1020,20 @@ function ErdTable({ records, baseline, target }) {
           <thead>
             <tr>
               <th>Channel</th><th>Subband</th>
+              {hasChunk && <th className="num">Chunk</th>}
               <th className="num">Baseline Power</th><th className="num">Task Power</th>
               <th className="num">ERD/ERS (%)</th><th>Tipe</th>
             </tr>
           </thead>
           <tbody>
-            {records.map((r, i) => {
+            {sorted.map((r, i) => {
               const pct = r.erd_ers_pct;
               const isErd = pct < 0;
               return (
                 <tr key={i}>
                   <td>{r.channel}</td>
                   <td><span className="badge badge-accent">{r.subband}</span></td>
+                  {hasChunk && <td className="num">{r.chunk}</td>}
                   <td className="num">{fmtNum(r.baseline_power)}</td>
                   <td className="num">{fmtNum(r.task_power)}</td>
                   <td className="num" style={{ fontWeight: 700, color: isErd ? 'var(--danger)' : 'var(--success)' }}>
