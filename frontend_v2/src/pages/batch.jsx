@@ -555,6 +555,7 @@ function BatchPage() {
                 { id: 'scatter',  label: 'Scatter' },
                 ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
                 ...(erdEnabled ? [{ id: 'erd', label: 'ERD/ERS' }] : []),
+                ...(results?.mode === 'chunk' ? [{ id: 'chunk-compare', label: 'Chunk Kondisi' }] : []),
                 { id: 'data',     label: 'Data Table' },
                 { id: 'sum',      label: 'Ringkasan' },
               ].map(t => (
@@ -592,8 +593,9 @@ function BatchPage() {
                 {tab === 'heatmap'  && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
                 {tab === 'scatter'  && <ScatterTab results={results} />}
                 {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} />}
-                {tab === 'erd'      && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
-                {tab === 'data'     && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
+                {tab === 'erd'          && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
+                {tab === 'chunk-compare' && <ChunkCompareTab results={results} />}
+                {tab === 'data'         && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
                 {tab === 'sum'      && <RingkasanTab results={results} scanMeta={scanMeta} />}
               </>
             )}
