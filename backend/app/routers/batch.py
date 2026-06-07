@@ -42,7 +42,7 @@ def _process_one_file(payload):
     """
     edf_path, meta, cfg = payload
     out = {"filename": edf_path, "records": [], "encoding": [],
-           "erd": [], "error": None}
+           "erd": [], "erd_compare": [], "error": None}
 
     loader = EEGLoader()
     try:
@@ -142,6 +142,23 @@ def _process_one_file(payload):
                     for rec in erd_df.to_dict(orient="records"):
                         out["erd"].append(
                             {**meta, "filename": edf_path, **rec})
+            except Exception:
+                pass
+
+        if (cfg.get("erd_compare_enabled") and cfg["chunk_mode"]
+                and cfg.get("erd_compare_tasks")):
+            try:
+                for tname in cfg["erd_compare_tasks"]:
+                    erd_c_df = EEGFeatures.compute_erd_ers_paired_chunked(
+                        loader, df, channels, tname,
+                        subbands=cfg["subbands"],
+                        baseline_task=cfg["erd_compare_baseline"],
+                        chunk_duration=cfg["chunk_duration"],
+                    )
+                    if not erd_c_df.empty:
+                        for rec in erd_c_df.to_dict(orient="records"):
+                            out["erd_compare"].append(
+                                {**meta, "filename": edf_path, **rec})
             except Exception:
                 pass
 
@@ -277,6 +294,9 @@ async def process_batch(
     erd_enabled: str = Form("false"),
     erd_baseline_task: str = Form(""),
     erd_target_task: str = Form(""),
+    erd_compare_enabled: str = Form("false"),
+    erd_compare_baseline: str = Form("Resting"),
+    erd_compare_tasks: str = Form("Resting,Thinking"),
 ):
     """Upload ZIP berisi file EDF + config, proses semua, return features per record.
 
@@ -319,6 +339,9 @@ async def process_batch(
         "erd_enabled": to_bool(erd_enabled),
         "erd_baseline_task": erd_baseline_task,
         "erd_target_task": erd_target_task,
+        "erd_compare_enabled": to_bool(erd_compare_enabled),
+        "erd_compare_baseline": erd_compare_baseline,
+        "erd_compare_tasks": [t.strip() for t in erd_compare_tasks.split(",") if t.strip()],
     }
 
     # Build payload hanya untuk file yang lolos filter kategori + scenario.
@@ -406,7 +429,7 @@ async def process_batch(
             yield json.dumps(item) + "\n"
 
         # Agregasi hasil sesuai urutan file asli (deterministik).
-        rec_all, enc_all, erd_all, errs = [], [], [], []
+        rec_all, enc_all, erd_all, erd_cmp_all, errs = [], [], [], [], []
         for res in results:
             if res is None:
                 continue
@@ -416,6 +439,7 @@ async def process_batch(
             rec_all.extend(res["records"])
             enc_all.extend(res["encoding"])
             erd_all.extend(res["erd"])
+            erd_cmp_all.extend(res.get("erd_compare", []))
 
         if not rec_all:
             yield json.dumps({
@@ -429,6 +453,7 @@ async def process_batch(
             "records": rec_all,
             "encoding_records": enc_all,
             "erd_records": erd_all,
+            "erd_compare_records": erd_cmp_all,
             "total_files": len(edf_files),
             "processed_files": len(set(r["filename"] for r in rec_all)),
             "errors": errs,
