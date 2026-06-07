@@ -400,7 +400,8 @@ async def process_batch(
                         except Exception as e:
                             results[i] = {
                                 "filename": payloads[i][0], "records": [],
-                                "encoding": [], "erd": [], "error": str(e),
+                                "encoding": [], "erd": [], "erd_compare": [],
+                                "error": str(e),
                             }
                         done += 1
                         emit({"type": "progress",
