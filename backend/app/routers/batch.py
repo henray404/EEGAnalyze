@@ -1,6 +1,11 @@
 import io
+import os
+import json
+import asyncio
+import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Optional
 
 from app.processing.loader import EEGLoader
@@ -9,7 +14,158 @@ from app.processing.features import EEGFeatures
 from app.processing.chunking import ChunkingPipeline
 from app.config import DEFAULT_SUBBANDS
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+# ------------------------------------------------------------------ #
+#  Parallel batch processing (process pool, satu proses per file)     #
+# ------------------------------------------------------------------ #
+
+# Bytes ZIP dishare ke tiap worker sekali via initializer (bukan dikirim
+# per task) supaya tidak di-pickle berulang.
+_WORKER_ZIP_BYTES = None
+
+
+def _init_worker(zip_bytes):
+    global _WORKER_ZIP_BYTES
+    _WORKER_ZIP_BYTES = zip_bytes
+
+
+def _process_one_file(payload):
+    """Proses satu file EDF penuh di dalam worker proses terpisah.
+
+    Module-level + argumen picklable supaya jalan di ProcessPoolExecutor
+    pada Windows (spawn). Mengembalikan dict berisi records, encoding,
+    erd, dan error (kalau ada).
+    """
+    edf_path, meta, cfg = payload
+    out = {"filename": edf_path, "records": [], "encoding": [],
+           "erd": [], "erd_compare": [], "error": None}
+
+    loader = EEGLoader()
+    try:
+        zip_buffer = io.BytesIO(_WORKER_ZIP_BYTES)
+        loader.load_edf_from_zip(zip_buffer, edf_path)
+
+        if cfg["detect_bad"]:
+            bad_chs = EEGFilters.detect_bad_channels(loader.raw)
+            if bad_chs:
+                loader.raw.info["bads"] = bad_chs
+                loader.raw.interpolate_bads(reset_bads=True, verbose=False)
+
+        if cfg["use_car"]:
+            EEGFilters.apply_car(loader)
+        if cfg["use_amplitude"]:
+            EEGFilters.apply_amplitude_filter(loader)
+        if cfg["use_notch"]:
+            EEGFilters.apply_notch(loader, freq=cfg["notch_freq"])
+
+        EEGFilters.apply_bandpass(
+            loader, low_freq=cfg["bp_low"], high_freq=cfg["bp_high"],
+            order=cfg["bp_order"],
+        )
+
+        if cfg["use_ica"]:
+            EEGFilters.apply_ica(
+                loader, n_components=cfg["ica_n"], method=cfg["ica_method"],
+            )
+
+        df = loader.extract_dataframe()
+        all_tasks = loader.get_task_list()
+        all_channels = loader.channel_names
+
+        tasks = [t for t in all_tasks
+                 if not cfg["tasks_filter"] or t in cfg["tasks_filter"]]
+        channels = [c for c in all_channels
+                    if not cfg["ch_filter"] or c in cfg["ch_filter"]]
+
+        if not tasks or not channels:
+            return out
+
+        if cfg["chunk_mode"]:
+            # parallel=False: parallelisasi sudah di level file (pool ini).
+            feat_df = ChunkingPipeline.compute_task_chunked_features(
+                loader, df, channels, tasks,
+                chunk_duration=cfg["chunk_duration"],
+                subbands=cfg["subbands"],
+                features=cfg["features"],
+            )
+        else:
+            feat_df = EEGFeatures.compute_task_features(
+                loader, df, channels, tasks,
+                subbands=cfg["subbands"],
+                features=cfg["features"],
+                include_frequency=cfg["include_frequency"],
+                psd_method=cfg["psd_method"],
+                psd_fmin=cfg["psd_fmin"],
+                psd_fmax=cfg["psd_fmax"],
+            )
+
+        if feat_df.empty:
+            return out
+
+        if cfg["chunk_mode"]:
+            feat_df = ChunkingPipeline.attach_chunk_encoding(feat_df)
+
+        for record in feat_df.to_dict(orient="records"):
+            out["records"].append({**meta, "filename": edf_path, **record})
+
+        if cfg["chunk_mode"]:
+            try:
+                chain_df = ChunkingPipeline.compute_chain_encoding(feat_df)
+                if not chain_df.empty:
+                    summary_df = ChunkingPipeline.summarize_chain_encoding(chain_df)
+                    for rec in summary_df.to_dict(orient="records"):
+                        out["encoding"].append(
+                            {**meta, "filename": edf_path, **rec})
+            except Exception:
+                pass
+
+        if cfg["erd_enabled"] and cfg["erd_baseline_task"] and cfg["erd_target_task"]:
+            try:
+                if cfg["chunk_mode"]:
+                    erd_df = EEGFeatures.compute_erd_ers_paired_chunked(
+                        loader, df, channels, cfg["erd_target_task"],
+                        subbands=cfg["subbands"],
+                        baseline_task=cfg["erd_baseline_task"],
+                        chunk_duration=cfg["chunk_duration"],
+                    )
+                else:
+                    erd_df = EEGFeatures.compute_erd_ers_paired(
+                        loader, df, channels, cfg["erd_target_task"],
+                        subbands=cfg["subbands"],
+                        baseline_task=cfg["erd_baseline_task"],
+                    )
+                if not erd_df.empty:
+                    for rec in erd_df.to_dict(orient="records"):
+                        out["erd"].append(
+                            {**meta, "filename": edf_path, **rec})
+            except Exception:
+                pass
+
+        if (cfg.get("erd_compare_enabled") and cfg["chunk_mode"]
+                and cfg.get("erd_compare_tasks")):
+            try:
+                for tname in cfg["erd_compare_tasks"]:
+                    erd_c_df = EEGFeatures.compute_erd_ers_paired_chunked(
+                        loader, df, channels, tname,
+                        subbands=cfg["subbands"],
+                        baseline_task=cfg["erd_compare_baseline"],
+                        chunk_duration=cfg["chunk_duration"],
+                    )
+                    if not erd_c_df.empty:
+                        for rec in erd_c_df.to_dict(orient="records"):
+                            out["erd_compare"].append(
+                                {**meta, "filename": edf_path, **rec})
+            except Exception:
+                pass
+
+    except Exception as e:
+        out["error"] = str(e)
+
+    return out
 
 
 @router.post("/scan")
@@ -138,6 +294,9 @@ async def process_batch(
     erd_enabled: str = Form("false"),
     erd_baseline_task: str = Form(""),
     erd_target_task: str = Form(""),
+    erd_compare_enabled: str = Form("false"),
+    erd_compare_baseline: str = Form("Resting"),
+    erd_compare_tasks: str = Form("Resting,Thinking"),
 ):
     """Upload ZIP berisi file EDF + config, proses semua, return features per record.
 
@@ -165,130 +324,143 @@ async def process_batch(
     tasks_filter = [t.strip() for t in filter_tasks.split(",") if t.strip()]
     ch_filter    = [c.strip() for c in filter_channels.split(",") if c.strip()]
 
-    all_records = []
-    all_encoding = []
-    all_erd_records = []
-    errors = []
+    # Config dipaketkan sekali (picklable) lalu dipakai semua worker.
+    cfg = {
+        "bp_low": bp_low, "bp_high": bp_high, "bp_order": bp_order,
+        "use_notch": to_bool(use_notch), "notch_freq": notch_freq,
+        "use_car": to_bool(use_car), "use_amplitude": to_bool(use_amplitude),
+        "detect_bad": to_bool(detect_bad),
+        "use_ica": to_bool(use_ica), "ica_method": ica_method, "ica_n": ica_n,
+        "subbands": selected_subbands, "features": selected_features,
+        "include_frequency": to_bool(include_frequency),
+        "psd_method": psd_method, "psd_fmin": psd_fmin, "psd_fmax": psd_fmax,
+        "tasks_filter": tasks_filter, "ch_filter": ch_filter,
+        "chunk_mode": to_bool(chunk_mode), "chunk_duration": chunk_duration,
+        "erd_enabled": to_bool(erd_enabled),
+        "erd_baseline_task": erd_baseline_task,
+        "erd_target_task": erd_target_task,
+        "erd_compare_enabled": to_bool(erd_compare_enabled),
+        "erd_compare_baseline": erd_compare_baseline,
+        "erd_compare_tasks": [t.strip() for t in erd_compare_tasks.split(",") if t.strip()],
+    }
 
+    # Build payload hanya untuk file yang lolos filter kategori + scenario.
+    payloads = []
     for edf_path in edf_files:
         meta = EEGLoader.detect_category(edf_path)
-
-        # Skip file jika kategorinya tidak dipilih user
         if cats_filter and meta["category"] not in cats_filter:
             continue
-
-        # Skip file jika skenarionya tidak dipilih user
         if scen_filter and meta.get("scenario") not in scen_filter:
             continue
+        payloads.append((edf_path, meta, cfg))
 
-        loader = EEGLoader()
-        try:
-            zip_buffer.seek(0)
-            loader.load_edf_from_zip(zip_buffer, edf_path)
+    total = len(payloads)
+    chunk_mode_b = to_bool(chunk_mode)
 
-            if to_bool(detect_bad):
-                bad_chs = EEGFilters.detect_bad_channels(loader.raw)
-                if bad_chs:
-                    loader.raw.info["bads"] = bad_chs
-                    loader.raw.interpolate_bads(reset_bads=True, verbose=False)
+    async def event_generator():
+        """Yield NDJSON: event progress per file selesai, lalu event result.
 
-            if to_bool(use_car):
-                EEGFilters.apply_car(loader)
-            if to_bool(use_amplitude):
-                EEGFilters.apply_amplitude_filter(loader)
-            if to_bool(use_notch):
-                EEGFilters.apply_notch(loader, freq=notch_freq)
+        Tiap baris satu JSON object:
+          {"type":"progress","processed":n,"total":N}
+          {"type":"result", ...payload lengkap...}
+          {"type":"error","detail":"..."}
+        """
+        if total == 0:
+            yield json.dumps({
+                "type": "error",
+                "detail": "Tidak ada file EDF yang cocok dengan filter",
+            }) + "\n"
+            return
 
-            EEGFilters.apply_bandpass(
-                loader, low_freq=bp_low, high_freq=bp_high, order=bp_order
-            )
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        results = [None] * total
 
-            if to_bool(use_ica):
-                EEGFilters.apply_ica(loader, n_components=ica_n, method=ica_method)
+        def _run():
+            # Jalan di thread terpisah: drive process pool, push progress
+            # ke queue lewat loop.call_soon_threadsafe (thread-safe).
+            def emit(item):
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            try:
+                workers = max(1, min(os.cpu_count() or 1, total))
+                with ProcessPoolExecutor(
+                    max_workers=workers,
+                    initializer=_init_worker,
+                    initargs=(zip_bytes,),
+                ) as ex:
+                    fut_idx = {
+                        ex.submit(_process_one_file, payloads[i]): i
+                        for i in range(total)
+                    }
+                    done = 0
+                    for fut in as_completed(fut_idx):
+                        i = fut_idx[fut]
+                        try:
+                            results[i] = fut.result()
+                        except Exception as e:
+                            results[i] = {
+                                "filename": payloads[i][0], "records": [],
+                                "encoding": [], "erd": [], "erd_compare": [],
+                                "error": str(e),
+                            }
+                        done += 1
+                        emit({"type": "progress",
+                              "processed": done, "total": total})
+            except Exception as exc:
+                logger.warning(
+                    "Process pool batch gagal (%s), fallback serial", exc)
+                # Fallback serial supaya tetap dapat hasil.
+                _init_worker(zip_bytes)
+                done = 0
+                for i in range(total):
+                    if results[i] is None:
+                        results[i] = _process_one_file(payloads[i])
+                    done += 1
+                    emit({"type": "progress",
+                          "processed": done, "total": total})
+            finally:
+                emit({"type": "_done"})
 
-            df = loader.extract_dataframe()
-            all_tasks = loader.get_task_list()
-            all_channels = loader.channel_names
+        loop.run_in_executor(None, _run)
 
-            # Apply task + channel filters
-            tasks    = [t for t in all_tasks    if not tasks_filter or t in tasks_filter]
-            channels = [c for c in all_channels if not ch_filter    or c in ch_filter]
+        while True:
+            item = await queue.get()
+            if item.get("type") == "_done":
+                break
+            yield json.dumps(item) + "\n"
 
-            if not tasks or not channels:
+        # Agregasi hasil sesuai urutan file asli (deterministik).
+        rec_all, enc_all, erd_all, erd_cmp_all, errs = [], [], [], [], []
+        for res in results:
+            if res is None:
                 continue
-
-            if to_bool(chunk_mode):
-                feat_df = ChunkingPipeline.compute_task_chunked_features(
-                    loader, df, channels, tasks,
-                    chunk_duration=chunk_duration,
-                    subbands=selected_subbands,
-                    features=selected_features,
-                )
-            else:
-                feat_df = EEGFeatures.compute_task_features(
-                    loader, df, channels, tasks,
-                    subbands=selected_subbands,
-                    features=selected_features,
-                    include_frequency=to_bool(include_frequency),
-                    psd_method=psd_method,
-                    psd_fmin=psd_fmin,
-                    psd_fmax=psd_fmax,
-                )
-
-            if feat_df.empty:
+            if res["error"]:
+                errs.append({"file": res["filename"], "error": res["error"]})
                 continue
+            rec_all.extend(res["records"])
+            enc_all.extend(res["encoding"])
+            erd_all.extend(res["erd"])
+            erd_cmp_all.extend(res.get("erd_compare", []))
 
-            for record in feat_df.to_dict(orient="records"):
-                all_records.append({**meta, "filename": edf_path, **record})
+        if not rec_all:
+            yield json.dumps({
+                "type": "error",
+                "detail": f"Gagal memproses semua file EDF. Errors: {errs[:3]}",
+            }) + "\n"
+            return
 
-            if to_bool(chunk_mode) and not feat_df.empty:
-                try:
-                    chain_df = ChunkingPipeline.compute_chain_encoding(feat_df)
-                    if not chain_df.empty:
-                        summary_df = ChunkingPipeline.summarize_chain_encoding(chain_df)
-                        for rec in summary_df.to_dict(orient="records"):
-                            all_encoding.append({**meta, "filename": edf_path, **rec})
-                except Exception:
-                    pass
+        yield json.dumps({
+            "type": "result",
+            "records": rec_all,
+            "encoding_records": enc_all,
+            "erd_records": erd_all,
+            "erd_compare_records": erd_cmp_all,
+            "total_files": len(edf_files),
+            "processed_files": len(set(r["filename"] for r in rec_all)),
+            "errors": errs,
+            "mode": "chunk" if chunk_mode_b else "full",
+            "chunk_duration": chunk_duration if chunk_mode_b else None,
+        }) + "\n"
 
-            if to_bool(erd_enabled) and erd_baseline_task and erd_target_task:
-                try:
-                    if to_bool(chunk_mode):
-                        erd_df = EEGFeatures.compute_erd_ers_paired_chunked(
-                            loader, df, channels, erd_target_task,
-                            subbands=selected_subbands,
-                            baseline_task=erd_baseline_task,
-                            chunk_duration=chunk_duration,
-                        )
-                    else:
-                        erd_df = EEGFeatures.compute_erd_ers_paired(
-                            loader, df, channels, erd_target_task,
-                            subbands=selected_subbands,
-                            baseline_task=erd_baseline_task,
-                        )
-                    if not erd_df.empty:
-                        for rec in erd_df.to_dict(orient="records"):
-                            all_erd_records.append({**meta, "filename": edf_path, **rec})
-                except Exception:
-                    pass
-
-        except Exception as e:
-            errors.append({"file": edf_path, "error": str(e)})
-            continue
-
-    if not all_records:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Gagal memproses semua file EDF. Errors: {errors[:3]}",
-        )
-
-    return JSONResponse(content={
-        "records": all_records,
-        "encoding_records": all_encoding,
-        "erd_records": all_erd_records,
-        "total_files": len(edf_files),
-        "processed_files": len(set(r["filename"] for r in all_records)),
-        "errors": errors,
-        "mode": "chunk" if to_bool(chunk_mode) else "full",
-        "chunk_duration": chunk_duration if to_bool(chunk_mode) else None,
-    })
+    return StreamingResponse(
+        event_generator(), media_type="application/x-ndjson")

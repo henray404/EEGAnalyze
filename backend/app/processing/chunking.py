@@ -32,6 +32,8 @@ Output (3 file CSV):
 import os
 import logging
 from collections import Counter
+from functools import lru_cache
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -69,13 +71,78 @@ _MIN_CHUNK_SAMPLES = 4
 #  Helper: bandpass filter per subband                                #
 # ------------------------------------------------------------------ #
 
-def _bandpass_array(data, sfreq, low, high, order=5):
-    """Bandpass filter pada array numpy 1-D (per-subband, single pass)."""
+@lru_cache(maxsize=256)
+def _butter_coeffs(sfreq, low, high, order=5):
+    """Koefisien butterworth bandpass (cached per sfreq/low/high/order).
+
+    Koefisien hanya bergantung pada parameter ini, bukan pada data, jadi
+    dihitung sekali lalu dipakai ulang untuk semua chunk/channel. Hasil
+    numerik identik dengan menghitung ulang tiap kali.
+    """
     nyq = 0.5 * sfreq
     low_n = max(low / nyq, 0.001)
     high_n = min(high / nyq, 0.999)
-    b, a = butter(order, [low_n, high_n], btype="band")
+    return butter(order, [low_n, high_n], btype="band")
+
+
+def _bandpass_array(data, sfreq, low, high, order=5):
+    """Bandpass filter pada array numpy 1-D (per-subband, single pass)."""
+    b, a = _butter_coeffs(sfreq, low, high, order)
     return filtfilt(b, a, data)
+
+
+# Ambang minimal unit kerja sebelum parallelisasi proses dipakai. Di bawah
+# ini overhead spawn proses lebih besar dari kerjanya, jadi tetap serial.
+_PARALLEL_MIN_UNITS = 8
+
+
+def _chunk_unit_rows(args):
+    """Worker: hitung semua row chunk untuk satu (task, channel).
+
+    Module-level + argumen picklable (numpy array + tuple) supaya bisa
+    dijalankan di ProcessPoolExecutor pada Windows (spawn).
+    """
+    task, ch, signal, sfreq, chunk_samples, subband_items, features = args
+    rows = []
+    n_chunks = len(signal) // chunk_samples
+    for ci in range(n_chunks):
+        start = ci * chunk_samples
+        chunk_signal = signal[start:start + chunk_samples]
+        for sb_name, (low, high) in subband_items:
+            filtered = _bandpass_array(chunk_signal, sfreq, low, high)
+            row = {"chunk": ci, "channel": ch, "subband": sb_name}
+            if task is not None:
+                row = {"task": task, **row}
+            for feat in features:
+                row[feat] = _compute_feature(feat, filtered, sfreq, low, high)
+            rows.append(row)
+    return rows
+
+
+def _run_chunk_units(units, parallel, max_workers):
+    """Jalankan list unit kerja chunk, serial atau via ProcessPoolExecutor.
+
+    Urutan output mengikuti urutan ``units`` (ex.map menjaga urutan), jadi
+    DataFrame hasil identik dengan eksekusi serial.
+    """
+    use_parallel = parallel and len(units) >= _PARALLEL_MIN_UNITS
+    rows = []
+    if use_parallel:
+        workers = max_workers or os.cpu_count() or 1
+        workers = max(1, min(workers, len(units)))
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as ex:
+                for part in ex.map(_chunk_unit_rows, units):
+                    rows.extend(part)
+            return rows
+        except Exception as exc:
+            # Fallback aman: kalau pool gagal (mis. nested daemon proses),
+            # jalankan serial supaya hasil tetap keluar.
+            logger.warning("Parallel chunking gagal (%s), fallback serial", exc)
+            rows = []
+    for unit in units:
+        rows.extend(_chunk_unit_rows(unit))
+    return rows
 
 
 def _compute_feature(feat, filtered, sfreq, low, high):
@@ -109,7 +176,8 @@ class ChunkingPipeline:
     @staticmethod
     def compute_chunked_subband_features(df, channels, sfreq,
                                           chunk_duration=DEFAULT_CHUNK_DURATION,
-                                          subbands=None, features=None):
+                                          subbands=None, features=None,
+                                          parallel=False, max_workers=None):
         """Hitung fitur per chunk per channel per subband.
 
         Sinyal dipotong menjadi chunk non-overlapping sepanjang
@@ -136,62 +204,65 @@ class ChunkingPipeline:
             )
             return pd.DataFrame()
 
-        rows = []
-        for ch in channels:
-            if ch not in df.columns:
-                continue
-            signal = df[ch].values
-            n_chunks = len(signal) // chunk_samples
-            if n_chunks == 0:
-                continue
-
-            for ci in range(n_chunks):
-                start = ci * chunk_samples
-                end = start + chunk_samples
-                chunk_signal = signal[start:end]
-
-                for sb_name, (low, high) in subbands.items():
-                    filtered = _bandpass_array(chunk_signal, sfreq, low, high)
-                    row = {"chunk": ci, "channel": ch, "subband": sb_name}
-                    for feat in features:
-                        row[feat] = _compute_feature(
-                            feat, filtered, sfreq, low, high
-                        )
-                    rows.append(row)
-
+        subband_items = list(subbands.items())
+        units = [
+            (None, ch, df[ch].values, sfreq, chunk_samples,
+             subband_items, features)
+            for ch in channels
+            if ch in df.columns and len(df[ch].values) // chunk_samples > 0
+        ]
+        rows = _run_chunk_units(units, parallel, max_workers)
         return pd.DataFrame(rows)
 
     @staticmethod
     def compute_task_chunked_features(loader, df, channels, tasks,
                                        chunk_duration=DEFAULT_CHUNK_DURATION,
-                                       subbands=None, features=None):
+                                       subbands=None, features=None,
+                                       parallel=False, max_workers=None):
         """Hitung fitur per chunk per task per channel per subband.
 
         Segment per task diekstrak dari annotations EDF, lalu di-chunk
-        secara terpisah.
+        secara terpisah. Semua unit (task x channel) dikumpulkan dulu lalu
+        dijalankan dalam satu pool proses (kalau ``parallel=True``) supaya
+        tidak ada overhead spawn berulang per task.
 
         Returns
         -------
         pd.DataFrame
             Kolom: [task, chunk, channel, subband] + fitur.
         """
-        all_parts = []
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+        if features is None:
+            features = DEFAULT_CHUNK_FEATURES
+
+        sfreq = loader.sfreq
+        chunk_samples = int(chunk_duration * sfreq)
+        if chunk_samples < _MIN_CHUNK_SAMPLES:
+            logger.warning(
+                "chunk_duration %.3fs pada sfreq %s Hz menghasilkan "
+                "%d sampel (< %d). Kembalikan DataFrame kosong.",
+                chunk_duration, sfreq, chunk_samples, _MIN_CHUNK_SAMPLES,
+            )
+            return pd.DataFrame()
+
+        subband_items = list(subbands.items())
+        units = []
         for task in tasks:
             seg = loader.extract_task_segments(df, task)
             if seg.empty:
                 continue
-            feat_df = ChunkingPipeline.compute_chunked_subband_features(
-                seg, channels, loader.sfreq, chunk_duration,
-                subbands, features,
-            )
-            if feat_df.empty:
-                continue
-            feat_df.insert(0, "task", task)
-            all_parts.append(feat_df)
+            for ch in channels:
+                if ch not in seg.columns:
+                    continue
+                signal = seg[ch].values
+                if len(signal) // chunk_samples == 0:
+                    continue
+                units.append((task, ch, signal, sfreq, chunk_samples,
+                              subband_items, features))
 
-        if all_parts:
-            return pd.concat(all_parts, ignore_index=True)
-        return pd.DataFrame()
+        rows = _run_chunk_units(units, parallel, max_workers)
+        return pd.DataFrame(rows)
 
     # ============================================================== #
     #  2. Chain Encoding                                               #
@@ -270,6 +341,48 @@ class ChunkingPipeline:
             all_rows.extend(transition_rows)
 
         return pd.DataFrame(all_rows)
+
+    @staticmethod
+    def attach_chunk_encoding(chunked_features_df, features=None):
+        """Tempel kolom ``{feat}_encoded`` ke tiap baris chunk.
+
+        encoded[i] = 1 jika feat[i] > feat[i-1], else 0. Per grup
+        (task?, channel, subband), urut by chunk. Chunk pertama tiap grup
+        = None (tak ada pendahulu). Kolom encoded disisipkan tepat setelah
+        kolom feature-nya supaya raw + encode bersebelahan di excel.
+        """
+        if chunked_features_df.empty:
+            return chunked_features_df
+        if features is None:
+            features = [
+                f for f in DEFAULT_CHUNK_FEATURES
+                if f in chunked_features_df.columns
+            ]
+
+        df = chunked_features_df.copy()
+        has_task = "task" in df.columns
+        group_cols = (["task", "channel", "subband"] if has_task
+                      else ["channel", "subband"])
+
+        for feat in features:
+            if feat not in df.columns:
+                continue
+            enc_col = f"{feat}_encoded"
+            df[enc_col] = None
+            for _, idx in df.groupby(group_cols).groups.items():
+                sub = df.loc[idx].sort_values("chunk")
+                order = sub.index.tolist()
+                vals = sub[feat].values
+                for i in range(1, len(order)):
+                    df.at[order[i], enc_col] = int(1 if vals[i] > vals[i - 1] else 0)
+
+        # Susun ulang kolom: tiap feature langsung diikuti kolom encoded-nya.
+        ordered = []
+        for c in chunked_features_df.columns:
+            ordered.append(c)
+            if f"{c}_encoded" in df.columns:
+                ordered.append(f"{c}_encoded")
+        return df[ordered]
 
     @staticmethod
     def summarize_chain_encoding(chain_df, features=None):

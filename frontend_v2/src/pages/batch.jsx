@@ -143,6 +143,7 @@ function BatchPage() {
   const [erdEnabled, setErdEnabled] = useState(false);
   const [erdBaseline, setErdBaseline] = useState('');
   const [erdTarget, setErdTarget] = useState('');
+  const [erdCompare, setErdCompare] = useState(false);
   const [tab, setTab] = useState('chart');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -191,15 +192,8 @@ function BatchPage() {
   const handleProcess = async () => {
     if (!file || !scanned) return;
     setProcessing(true); setDone(false); setProgress(0); setFilesProcessed(0); setApiError(null);
-    const ticker = setInterval(() => {
-      setProgress(p => {
-        const np = Math.min(p + Math.random() * 6 + 1, 95);
-        if (totalFiles > 0) setFilesProcessed(Math.floor(np / 100 * totalFiles));
-        return np;
-      });
-    }, 300);
     try {
-      const data = await Api.batchProcess(file, {
+      const data = await Api.batchProcessStream(file, {
         bp_low: AppConfigB.BP_DEFAULT_LOW,
         bp_high: AppConfigB.BP_DEFAULT_HIGH,
         bp_order: AppConfigB.BP_DEFAULT_ORDER,
@@ -219,19 +213,24 @@ function BatchPage() {
         erd_enabled: erdEnabled,
         erd_baseline_task: erdBaseline,
         erd_target_task: erdTarget,
+        erd_compare_enabled: erdCompare,
+        erd_compare_baseline: 'Resting',
+        erd_compare_tasks: 'Resting,Thinking',
         filter_categories: kategori.join(','),
         filter_scenarios: scenario.join(','),
         filter_tasks: tasks.join(','),
         filter_channels: channels.join(','),
+      }, (processed, total) => {
+        setFilesProcessed(processed);
+        setProgress(total > 0 ? Math.round((processed / total) * 100) : 0);
       });
       setResults(data);
       setFilesProcessed(data.processed_files || totalFiles);
+      setProgress(100);
       setDone(true);
     } catch (e) {
       setApiError(e.message || 'Gagal proses batch');
     } finally {
-      clearInterval(ticker);
-      setProgress(100);
       setProcessing(false);
     }
   };
@@ -249,7 +248,7 @@ function BatchPage() {
     const fname = `batch_features_${Date.now()}.xlsx`;
     try {
       const blob = await Api.exportExcel(
-        [{ name: 'Features', records: results.records }], fname,
+        window.recordsToScenarioSheets(results.records, 'Features'), fname,
       );
       window.downloadBlob(blob, fname);
     } catch (e) {
@@ -519,6 +518,12 @@ function BatchPage() {
                     />
                   </div>
                 )}
+                {extractMode === 'chunk' && (
+                  <div className="sub-card" style={{ marginTop: 12 }}>
+                    <ToggleRowB on={erdCompare} onChange={setErdCompare} label="ERD Compare (Resting vs Thinking)" />
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Aktifkan untuk chart ERD% chunk per kondisi di tab Chunk Kondisi.</div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -550,6 +555,7 @@ function BatchPage() {
                 { id: 'scatter',  label: 'Scatter' },
                 ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
                 ...(erdEnabled ? [{ id: 'erd', label: 'ERD/ERS' }] : []),
+                ...(results?.mode === 'chunk' ? [{ id: 'chunk-compare', label: 'Chunk Kondisi' }] : []),
                 { id: 'data',     label: 'Data Table' },
                 { id: 'sum',      label: 'Ringkasan' },
               ].map(t => (
@@ -587,8 +593,9 @@ function BatchPage() {
                 {tab === 'heatmap'  && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
                 {tab === 'scatter'  && <ScatterTab results={results} />}
                 {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} />}
-                {tab === 'erd'      && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
-                {tab === 'data'     && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
+                {tab === 'erd'          && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
+                {tab === 'chunk-compare' && <ChunkCompareTab results={results} />}
+                {tab === 'data'         && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}
                 {tab === 'sum'      && <RingkasanTab results={results} scanMeta={scanMeta} />}
               </>
             )}
@@ -750,7 +757,7 @@ function BatchErdTab({ results, baseline, target }) {
           </button>
           <button className="btn btn-primary" onClick={async () => {
             const fname = `batch_erd_${Date.now()}.xlsx`;
-            try { const blob = await window.Api.exportExcel([{ name: 'ERD_ERS', records }], fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+            try { const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
           }}>
             <Icon.Download /> Excel
           </button>

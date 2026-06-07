@@ -226,7 +226,8 @@ function SingleFilePage() {
       setMeta(data);
       const chs = data.channels || [];
       setSelectedChannels(chs.slice(0, Math.min(12, chs.length)));
-      if (chs.length > 0) setSubbandChannel(chs[0]);
+      const subChs = selectedChannels.length ? selectedChannels : chs;
+      if (subChs.length > 0) setSubbandChannel(subChs[0]);
     } catch (e) {
       setUploadError(e.message || 'Tidak dapat terhubung ke backend. Pastikan uvicorn berjalan di port 8000.');
       setMeta(null);
@@ -330,7 +331,7 @@ function SingleFilePage() {
     const fname = `single_file_features_${Date.now()}.xlsx`;
     try {
       const blob = await Api.exportExcel(
-        [{ name: 'Features', records: results.features }], fname,
+        window.recordsToScenarioSheets(results.features, 'Features'), fname,
       );
       window.downloadBlob(blob, fname);
     } catch (e) {
@@ -708,7 +709,7 @@ function SingleFilePage() {
             )}
             {tab === 'subband' && (
               <SubbandTab
-                file={file} allChannels={allChannels} subbands={subbandSel}
+                file={file} allChannels={selectedChannels.length ? selectedChannels : allChannels} subbands={subbandSel}
                 channel={subbandChannel} setChannel={setSubbandChannel}
                 tStart={tStart} setTStart={setTStart} tDur={tDur} setTDur={setTDur}
                 figure={subbandPlot} loading={plotLoading} error={plotError}
@@ -1009,7 +1010,7 @@ function ErdTable({ records, baseline, target }) {
           </button>
           <button className="btn btn-primary" onClick={async () => {
             const fname = `erd_${Date.now()}.xlsx`;
-            try { const blob = await window.Api.exportExcel([{ name: 'ERD_ERS', records }], fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+            try { const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
           }}>
             <Icon.Download /> Excel
           </button>

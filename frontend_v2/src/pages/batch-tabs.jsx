@@ -732,4 +732,136 @@ function EncodingTab({ results, onDownloadEncoding }) {
   );
 }
 
+// ===================== CHUNK COMPARE TAB (chunk index x 2 kondisi) =====================
+function ChunkCompareTab({ results }) {
+  const records = results?.records || [];
+  const erdRecords = results?.erd_compare_records || [];
+  const [mode, setMode] = useStateBT('feature'); // 'feature' | 'erd'
+
+  const isChunk = results?.mode === 'chunk';
+  const src = mode === 'erd' ? erdRecords : records;
+
+  const idKey = (r) => r.subject || r.scenario || r.filename || '-';
+  const ids = useMemoBT(() => Array.from(new Set(src.map(idKey))).sort(), [src]);
+  const channels = useMemoBT(() => Array.from(new Set(src.map(r => r.channel).filter(Boolean))).sort(), [src]);
+  const subbandsAvail = useMemoBT(() => Array.from(new Set(src.map(r => r.subband).filter(Boolean))).sort(), [src]);
+  const featureCols = useMemoBT(() => _detectFeatureCols(records).filter(f => f !== 'chunk'), [records]);
+  const tasks = useMemoBT(() => Array.from(new Set(src.map(r => r.task).filter(Boolean))).sort(), [src]);
+
+  const [id, setId] = useStateBT('');
+  const [channel, setChannel] = useStateBT('');
+  const [subband, setSubband] = useStateBT('');
+  const [feature, setFeature] = useStateBT('');
+  const [condA, setCondA] = useStateBT('Resting');
+  const [condB, setCondB] = useStateBT('Thinking');
+
+  const curId = ids.includes(id) ? id : (ids[0] || '');
+  const curCh = channels.includes(channel) ? channel : (channels[0] || '');
+  const curSb = subbandsAvail.includes(subband) ? subband : (subbandsAvail[0] || '');
+  const curFeat = featureCols.includes(feature) ? feature : (featureCols[0] || 'mav');
+  const yKey = mode === 'erd' ? 'erd_ers_pct' : curFeat;
+
+  const seriesFor = (cond) => src
+    .filter(r => idKey(r) === curId && r.channel === curCh && r.subband === curSb && r.task === cond)
+    .map(r => ({ chunk: Number(r.chunk), y: Number(r[yKey]) }))
+    .filter(d => !isNaN(d.chunk) && !isNaN(d.y))
+    .sort((a, b) => a.chunk - b.chunk);
+
+  const sA = useMemoBT(() => seriesFor(condA), [src, curId, curCh, curSb, yKey, condA]);
+  const sB = useMemoBT(() => seriesFor(condB), [src, curId, curCh, curSb, yKey, condB]);
+
+  if (!isChunk) {
+    return _emptyTab('Hanya untuk mode Chunk', 'Pilih mode ekstraksi "Chunk" lalu proses ulang.');
+  }
+  if (mode === 'erd' && erdRecords.length === 0) {
+    return _emptyTab('ERD Compare belum aktif', 'Aktifkan toggle "ERD Compare" di panel Ekstraksi lalu proses ulang.');
+  }
+  if (src.length === 0) {
+    return _emptyTab('Belum ada data', 'Proses batch dengan mode Chunk untuk melihat perbandingan.');
+  }
+
+  const chunkSet = Array.from(new Set([...sA.map(d => d.chunk), ...sB.map(d => d.chunk)])).sort((a, b) => a - b);
+  const mapA = new Map(sA.map(d => [d.chunk, d.y]));
+  const mapB = new Map(sB.map(d => [d.chunk, d.y]));
+  const allY = [...sA.map(d => d.y), ...sB.map(d => d.y)];
+  const maxAbs = allY.reduce((a, b) => Math.abs(b) > a ? Math.abs(b) : a, Number.EPSILON);
+
+  const w = 800, h = 340, pad = 50;
+  const groupW = (w - pad - 20) / Math.max(chunkSet.length, 1);
+  const barW = Math.min(20, groupW * 0.32);
+  const maxH = h - 80;
+  const zeroY = 20 + maxH;
+
+  const selStyle = { padding: '6px 12px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, fontWeight: 600 };
+  const colA = '#5B65DC', colB = '#9AA0EC';
+  const barY = (v) => v >= 0 ? zeroY - Math.abs(v / maxAbs) * maxH : zeroY;
+  const barH = (v) => Math.abs(v / maxAbs) * maxH;
+
+  return (
+    <>
+      <div className="ctrl-bar" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div className="chip-group">
+          <button className={`chip ${mode === 'feature' ? 'selected' : ''}`} onClick={() => setMode('feature')}>Feature</button>
+          <button className={`chip ${mode === 'erd' ? 'selected' : ''}`} onClick={() => setMode('erd')}>ERD%</button>
+        </div>
+        <select value={curId} onChange={e => setId(e.target.value)} style={selStyle}>
+          {ids.map(x => <option key={x} value={x}>ID: {x}</option>)}
+        </select>
+        <select value={curCh} onChange={e => setChannel(e.target.value)} style={selStyle}>
+          {channels.map(x => <option key={x} value={x}>Ch: {x}</option>)}
+        </select>
+        <select value={curSb} onChange={e => setSubband(e.target.value)} style={selStyle}>
+          {subbandsAvail.map(x => <option key={x} value={x}>SB: {x}</option>)}
+        </select>
+        {mode === 'feature' && (
+          <select value={curFeat} onChange={e => setFeature(e.target.value)} style={selStyle}>
+            {featureCols.map(x => <option key={x} value={x}>Fitur: {x}</option>)}
+          </select>
+        )}
+        <select value={condA} onChange={e => setCondA(e.target.value)} style={selStyle}>
+          {tasks.map(x => <option key={x} value={x}>A: {x}</option>)}
+        </select>
+        <select value={condB} onChange={e => setCondB(e.target.value)} style={selStyle}>
+          {tasks.map(x => <option key={x} value={x}>B: {x}</option>)}
+        </select>
+      </div>
+      <div style={{ padding: 24 }}>
+        <div className="card" style={{ padding: 20 }}>
+          <div className="row-between mb-16">
+            <span style={{ fontWeight: 600 }}>{mode === 'erd' ? 'ERD%' : curFeat.toUpperCase()} per Chunk · {curCh} / {curSb}</span>
+            <span className="row gap-8" style={{ fontSize: 12 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: colA, display: 'inline-block' }} /> {condA}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: colB, display: 'inline-block' }} /> {condB}</span>
+            </span>
+          </div>
+          {chunkSet.length === 0 ? (
+            <div className="empty"><p>Tidak ada chunk untuk kombinasi ini.</p></div>
+          ) : (
+            <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 360 }}>
+              {[0, 0.25, 0.5, 0.75, 1].map(t => (
+                <g key={t}>
+                  <line x1={pad} x2={w - 20} y1={20 + maxH * (1 - t)} y2={20 + maxH * (1 - t)} className="gridline" />
+                  <text x={pad - 6} y={24 + maxH * (1 - t)} textAnchor="end" className="axis-text">{_fmt(t * maxAbs, 2)}</text>
+                </g>
+              ))}
+              {chunkSet.map((ck, gi) => {
+                const gx = pad + 10 + gi * groupW + groupW / 2;
+                const vA = mapA.has(ck) ? mapA.get(ck) : null;
+                const vB = mapB.has(ck) ? mapB.get(ck) : null;
+                return (
+                  <g key={ck}>
+                    {vA !== null && <rect x={gx - barW - 2} y={barY(vA)} width={barW} height={barH(vA)} rx="3" fill={colA} />}
+                    {vB !== null && <rect x={gx + 2} y={barY(vB)} width={barW} height={barH(vB)} rx="3" fill={colB} />}
+                    <text x={gx} y={h - 12} textAnchor="middle" className="axis-text">{ck}</text>
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 Object.assign(window, { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab, EncodingTab });
