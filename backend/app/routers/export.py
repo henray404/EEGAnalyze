@@ -50,15 +50,20 @@ def _write_sheet(ws, records: list[dict]):
         for ci, h in enumerate(headers, 1):
             v = rec.get(h)
             if isinstance(v, float):
-                v = round(v, 8)
+                v = round(v, 6)
             cell = ws.cell(ri, ci, v)
             cell.border = _THIN
             if fill:
                 cell.fill = fill
-            if h not in _META_COLS and isinstance(v, (int, float)):
-                cell.number_format = "0.000000E+00"
+            if isinstance(v, bool):
+                pass  # tampil TRUE/FALSE apa adanya
+            elif isinstance(v, int):
+                cell.number_format = "0"
                 cell.alignment = Alignment(horizontal="right")
-            col_widths[h] = max(col_widths[h], len(str(v or "")) + 2)
+            elif isinstance(v, float):
+                cell.number_format = "0.000000"
+                cell.alignment = Alignment(horizontal="right")
+            col_widths[h] = max(col_widths[h], len(str(v if v is not None else "")) + 2)
 
     for ci, h in enumerate(headers, 1):
         ws.column_dimensions[get_column_letter(ci)].width = min(col_widths[h], 30)
