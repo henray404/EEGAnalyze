@@ -371,7 +371,7 @@ function SingleFilePage() {
           <div className="page-head-text">
             <div className="crumb">Analisis <Icon.Chev /> Single File</div>
             <h2>Single File Analysis</h2>
-            <p className="subtitle">Upload satu file EDF atau TXT dan analisis sinyal interaktif.</p>
+            <p className="subtitle">Upload satu file EDF, TXT, atau ZIP recoveriX dan analisis sinyal interaktif.</p>
           </div>
           <div className="page-head-actions">
             <button className="fpill"><Icon.Sliders /> Mode: EDF <Icon.ChevDown /></button>
@@ -389,12 +389,12 @@ function SingleFilePage() {
             <div className="side-section">
               <div className="side-title-row">
                 <span className="eyebrow">STEP 01</span>
-                <h3>Upload File EDF / TXT</h3>
+                <h3>Upload File EDF / TXT / recoveriX</h3>
               </div>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".edf,.txt"
+                accept=".edf,.txt,.zip"
                 style={{ display: 'none' }}
                 onChange={e => {
                   const f = e.target.files?.[0];
@@ -408,7 +408,10 @@ function SingleFilePage() {
                   <div className="file-card-info">
                     <div className="name">{file.name}</div>
                     <div className="meta">
-                      {formatSize(file.size)} · {file.name.toLowerCase().endsWith('.txt') ? 'TXT' : 'EDF'}
+                      {formatSize(file.size)} · {
+                        file.name.toLowerCase().endsWith('.zip') ? 'recoveriX'
+                          : file.name.toLowerCase().endsWith('.txt') ? 'TXT' : 'EDF'
+                      }
                     </div>
                   </div>
                   <button className="file-card-x" onClick={handleClearFile}><Icon.X /></button>
@@ -423,7 +426,7 @@ function SingleFilePage() {
                   <div className="dz-icon"><Icon.Cloud /></div>
                   <div className="dz-title">Drag &amp; drop file</div>
                   <div className="dz-sub">atau klik untuk pilih file</div>
-                  <div className="dz-hint">Format: .edf  .txt (OpenBCI)</div>
+                  <div className="dz-hint">Format: .edf  .txt (OpenBCI)  .zip (recoveriX)</div>
                 </div>
               )}
               {uploading && (

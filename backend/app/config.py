@@ -22,6 +22,17 @@ DEFAULT_SUBBANDS = {
 # Threshold amplitudo EEG (µV) — sinyal di atas ini dianggap artefak
 AMPLITUDE_MAX_UV = 100.0
 
+# ------------------------------------------------------------------ #
+#  recoveriX (g.tec)                                                  #
+# ------------------------------------------------------------------ #
+
+# Nilai mentah rawData.bin diduga nanovolt -> Volt untuk MNE RawArray.
+# Asumsi; verifikasi terhadap amplitudo wajar (10-200 uV). Ubah di sini bila salah.
+RECOVERIX_SCALE = 1e-9
+
+# FlashingItem pada trial -> label kondisi motor imagery.
+RECOVERIX_LABEL_MAP = {0: "Right", 1: "Left"}
+
 # Fitur statistik dasar (time‑domain)
 DEFAULT_FEATURES = ["mav", "variance", "std"]
 

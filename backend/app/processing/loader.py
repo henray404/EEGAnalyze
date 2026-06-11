@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 from app.config import OPENBCI_CHANNEL_MAP, OPENBCI_SFREQ, OPENBCI_CONDITIONS
+from app.config import RECOVERIX_SCALE, RECOVERIX_LABEL_MAP
+from app.processing import recoverix
     
 
 class EEGLoader:
@@ -477,6 +479,67 @@ class EEGLoader:
             io.BytesIO(data),
             channel_map=channel_map,
         )
+
+    def load_recoverix_zip(self, zip_buffer):
+        """Load arsip ZIP sesi recoveriX (berisi rawData1/2/3.tar.gz).
+
+        Gabung semua blok rawData jadi satu RawArray, dengan annotations
+        Left/Right dari daftar trial. Setelah ini, self.raw identik dengan
+        hasil load EDF sehingga seluruh pipeline existing dapat dipakai.
+        """
+        try:
+            self._cleanup_tmp()
+
+            with zipfile.ZipFile(zip_buffer, "r") as zf:
+                tar_names = recoverix.find_rawdata_tars(zf.namelist())
+                if not tar_names:
+                    raise ValueError(
+                        "Bukan arsip sesi recoveriX (tidak ada rawData*.tar.gz)."
+                    )
+                blocks = [
+                    recoverix.read_block_from_tar(zf.read(name))
+                    for name in tar_names
+                ]
+
+            session = recoverix.load_session(blocks)
+            data_volts = session["data"] * RECOVERIX_SCALE
+            ch_names = session["ch_names"]
+            sfreq = session["sfreq"]
+
+            info = mne.create_info(
+                ch_names=ch_names, sfreq=sfreq, ch_types="eeg",
+            )
+            self.raw = mne.io.RawArray(data_volts, info, verbose=False)
+
+            trigger_pos = session["meta"]["trigger_pos"]
+            frame_len = session["meta"]["frame_len"]
+            onsets, durations, descs = [], [], []
+            for tr in session["trials"]:
+                onset = (tr["sample_index"] - trigger_pos) / sfreq
+                onsets.append(max(onset, 0.0))
+                durations.append(frame_len / sfreq)
+                descs.append(RECOVERIX_LABEL_MAP.get(tr["flashing_item"], "unknown"))
+            if onsets:
+                self.raw.set_annotations(
+                    mne.Annotations(onsets, durations, descs)
+                )
+
+            self.raw_original = self.raw.copy()
+            self.sfreq = sfreq
+            self.channel_names = ch_names
+            self.processing_log = [
+                f"File recoveriX dimuat: {len(ch_names)} channel, "
+                f"{data_volts.shape[1]} sampel "
+                f"({data_volts.shape[1] / sfreq:.1f}s), "
+                f"{session['meta']['n_blocks']} blok digabung, "
+                f"{len(session['trials'])} trial.",
+                "Data sudah difilter di perangkat (HP 0.5 / LP 30 / Notch 50 Hz). "
+                "Hindari filter ulang, terutama notch.",
+            ]
+            return self.get_raw_info()
+
+        except Exception as exc:
+            raise RuntimeError(f"Gagal memuat arsip recoveriX: {exc}") from exc
 
     @staticmethod
     def list_txt_in_zip(zip_buffer):

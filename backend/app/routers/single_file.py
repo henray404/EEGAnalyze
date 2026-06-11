@@ -91,15 +91,21 @@ def _sanitize_records(records: list) -> list:
     return records
 
 
+def _is_zip(filename: str) -> bool:
+    return filename.lower().endswith(".zip")
+
+
 def _load_uploaded_file(loader: EEGLoader, upload: UploadFile):
     fname = upload.filename or ""
     if _is_edf(fname):
         return loader.load_edf(upload.file)
     if _is_txt(fname):
         return loader.load_openbci_txt(upload.file)
+    if _is_zip(fname):
+        return loader.load_recoverix_zip(upload.file)
     raise HTTPException(
         status_code=400,
-        detail="File harus berformat .edf atau .txt (OpenBCI)",
+        detail="File harus berformat .edf, .txt (OpenBCI), atau .zip (recoveriX)",
     )
 
 
@@ -272,7 +278,12 @@ async def upload_single_file(file: UploadFile = File(...)):
 
     info["tasks"] = loader.get_task_list()
     info["filename"] = file.filename
-    info["format"] = "EDF" if _is_edf(file.filename or "") else "TXT"
+    if _is_edf(file.filename or ""):
+        info["format"] = "EDF"
+    elif _is_zip(file.filename or ""):
+        info["format"] = "recoveriX"
+    else:
+        info["format"] = "TXT"
     return JSONResponse(content=info)
 
 
@@ -336,6 +347,7 @@ async def process_single_file(
                 chunk_duration=chunk_duration,
                 subbands=selected_subbands,
                 features=selected_features,
+                parallel=True,
             )
             mode = "chunk"
         else:

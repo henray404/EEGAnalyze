@@ -56,5 +56,10 @@ uploads/
 tmp/
 temp/
 
+# Data pasien recoveriX (jangan commit; berisi biodata)
+ltk-*/
+*.tar.gz
+results.bin
+
 
 frontend/
