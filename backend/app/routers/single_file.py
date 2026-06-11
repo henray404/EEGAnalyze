@@ -402,8 +402,12 @@ async def compute_erd_single(
     target_task: str = Form(""),
     chunk_mode: str = Form("false"),
     chunk_duration: float = Form(0.5),
+    intra_trial: str = Form("false"),
 ):
-    if not baseline_task or not target_task:
+    is_intra_trial = _to_bool(intra_trial)
+    if not target_task:
+        raise HTTPException(status_code=400, detail="target_task wajib diisi")
+    if not is_intra_trial and not baseline_task:
         raise HTTPException(status_code=400, detail="baseline_task dan target_task wajib diisi")
 
     loader = EEGLoader()
@@ -424,7 +428,19 @@ async def compute_erd_single(
 
         selected_subbands = _resolve_subbands(subbands)
 
-        if _to_bool(chunk_mode):
+        if is_intra_trial:
+            if not loader.cue_offset_s:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Mode intra-trial cuma berlaku untuk file recoveriX (.zip).",
+                )
+            erd_df = EEGFeatures.compute_erd_ers_intratrial(
+                loader, df, channels, target_task,
+                subbands=selected_subbands,
+                cue_offset_s=loader.cue_offset_s,
+            )
+            erd_mode = "intra_trial"
+        elif _to_bool(chunk_mode):
             erd_df = EEGFeatures.compute_erd_ers_paired_chunked(
                 loader, df, channels, target_task,
                 subbands=selected_subbands,
@@ -442,7 +458,7 @@ async def compute_erd_single(
 
         records = _sanitize_records(erd_df.to_dict(orient="records")) if not erd_df.empty else []
         return JSONResponse(content={
-            "baseline_task": baseline_task,
+            "baseline_task": baseline_task if not is_intra_trial else "pre-cue",
             "target_task": target_task,
             "erd_mode": erd_mode,
             "chunk_duration": chunk_duration if erd_mode == "chunk" else None,

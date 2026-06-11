@@ -566,6 +566,93 @@ class EEGFeatures:
         return pd.DataFrame(rows)
 
     @staticmethod
+    def compute_erd_ers_intratrial(loader, df, channels, task_name,
+                                    subbands=None, cue_offset_s=None):
+        """Hitung ERD/ERS intra-trial: baseline pre-cue vs target post-cue.
+
+        Khusus data recoveriX, di mana tiap occurrence task_name adalah
+        satu frame trial yang berisi periode pre-cue (rest) diikuti
+        periode post-cue (motor imagery). Tiap occurrence dipotong pada
+        cue_offset_s detik dari awal occurrence: bagian sebelum jadi
+        baseline, bagian sesudah jadi target.
+
+        ERD/ERS = ((avg_power_postcue - avg_power_precue) / avg_power_precue) x 100%
+
+        Parameters
+        ----------
+        loader : EEGLoader
+        df : pd.DataFrame
+        channels : list[str]
+        task_name : str       Nama kondisi (mis. 'Left' atau 'Right').
+        subbands : dict | None
+        cue_offset_s : float  Durasi periode pre-cue (detik) dari awal tiap occurrence.
+
+        Returns
+        -------
+        pd.DataFrame  Kolom: task, channel, subband, baseline_power,
+                       task_power, erd_ers_pct.
+        """
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+        if not cue_offset_s:
+            return pd.DataFrame()
+
+        occurrences = loader.get_task_occurrences()
+        task_occs = [o for o in occurrences if o["task"] == task_name]
+        if not task_occs:
+            return pd.DataFrame()
+
+        sfreq = loader.sfreq
+        rows = []
+
+        for ch in channels:
+            baseline_signals = []
+            task_signals = []
+            for occ in task_occs:
+                seg = loader.extract_occurrence_segment(df, task_name, occ["occurrence"])
+                if seg.empty or ch not in seg.columns:
+                    continue
+                cue_time = seg["time"].iloc[0] + cue_offset_s
+                pre = seg[seg["time"] < cue_time]
+                post = seg[seg["time"] >= cue_time]
+                if len(pre) >= 4:
+                    baseline_signals.append(pre[ch].values)
+                if len(post) >= 4:
+                    task_signals.append(post[ch].values)
+
+            if not baseline_signals or not task_signals:
+                continue
+
+            for sb_name, (low, high) in subbands.items():
+                power_base = float(np.mean([
+                    EEGFeatures.compute_band_power(sig, sfreq, low, high)
+                    for sig in baseline_signals
+                ]))
+                power_task = float(np.mean([
+                    EEGFeatures.compute_band_power(sig, sfreq, low, high)
+                    for sig in task_signals
+                ]))
+
+                erd_ers = (
+                    ((power_task - power_base) / power_base) * 100.0
+                    if power_base != 0 else 0.0
+                )
+
+                rows.append({
+                    "task": task_name,
+                    "channel": ch,
+                    "subband": sb_name,
+                    "baseline_power": power_base,
+                    "task_power": power_task,
+                    "erd_ers_pct": erd_ers,
+                })
+
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(rows)
+
+    @staticmethod
     def compute_erd_ers_paired_chunked(loader, df, channels, task_name,
                                        subbands=None, baseline_task="Resting",
                                        chunk_duration=0.5):

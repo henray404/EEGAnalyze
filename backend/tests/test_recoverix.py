@@ -3,6 +3,7 @@ import tarfile
 import zipfile
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from app.processing import recoverix
@@ -177,3 +178,75 @@ def test_load_recoverix_zip_rejects_non_recoverix():
     loader = EEGLoader()
     with pytest.raises(RuntimeError):
         loader.load_recoverix_zip(zbuf)
+
+
+def test_load_recoverix_zip_sets_cue_offset():
+    from app.processing.loader import EEGLoader
+    loader = EEGLoader()
+    loader.load_recoverix_zip(_make_session_zip())
+    assert loader.cue_offset_s == 500 / 250  # trigger_pos / sfreq
+
+
+def test_eegloader_default_cue_offset_is_none():
+    from app.processing.loader import EEGLoader
+    assert EEGLoader().cue_offset_s is None
+
+
+# ----- compute_erd_ers_intratrial ----- #
+
+def make_bin_split(pre_samples, post_samples, pre_amp, post_amp,
+                   n_eeg=16, freq=10, sfreq=250):
+    """Bin sintetik: sinyal sinus freq Hz, amplitudo pre_amp lalu post_amp."""
+    n_samples = pre_samples + post_samples
+    n_cols = n_eeg + 1
+    t = np.arange(n_samples) / sfreq
+    amp = np.where(np.arange(n_samples) < pre_samples, pre_amp, post_amp)
+    sig = (amp * np.sin(2 * np.pi * freq * t)).astype("<f4")
+    mat = np.zeros((n_samples, n_cols), dtype="<f4")
+    for c in range(n_eeg):
+        mat[:, c] = sig
+    mat[:, n_eeg] = 1.0
+    return mat.tobytes()
+
+
+def test_compute_erd_ers_intratrial_basic():
+    from app.processing.loader import EEGLoader
+    from app.processing.features import EEGFeatures
+
+    sfreq = 250
+    pre_n, post_n = 500, 1500  # 2s pre-cue, 6s post-cue
+    bin_bytes = make_bin_split(pre_n, post_n, pre_amp=1.0, post_amp=0.2, sfreq=sfreq)
+    xml = make_descriptor(
+        sfreq=sfreq, frame_len=pre_n + post_n, trigger_pos=pre_n,
+        trials=[{"flashing_item": 1, "sample_index": pre_n}],  # 1 = Left
+    )
+    tar = make_tar(bin_bytes, xml)
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as zf:
+        zf.writestr("sess/rawData1.tar.gz", tar)
+    zbuf.seek(0)
+
+    loader = EEGLoader()
+    loader.load_recoverix_zip(zbuf)
+    df = loader.extract_dataframe()
+
+    erd_df = EEGFeatures.compute_erd_ers_intratrial(
+        loader, df, ["C0"], "Left",
+        subbands={"alpha": (8, 13)},
+        cue_offset_s=loader.cue_offset_s,
+    )
+    assert not erd_df.empty
+    row = erd_df.iloc[0]
+    assert row["task"] == "Left"
+    assert row["channel"] == "C0"
+    assert row["subband"] == "alpha"
+    assert row["baseline_power"] > row["task_power"]
+    assert row["erd_ers_pct"] < -50  # ERD jelas (post lebih kecil dari pre)
+
+
+def test_compute_erd_ers_intratrial_no_cue_offset():
+    from app.processing.features import EEGFeatures
+    result = EEGFeatures.compute_erd_ers_intratrial(
+        None, pd.DataFrame(), ["C0"], "Left", cue_offset_s=None,
+    )
+    assert result.empty

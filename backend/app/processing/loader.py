@@ -27,6 +27,7 @@ class EEGLoader:
         self.sfreq = None
         self.channel_names = []
         self.processing_log = []
+        self.cue_offset_s = None
         self._tmp_path = None
 
     # ------------------------------------------------------------------ #
@@ -527,6 +528,7 @@ class EEGLoader:
             self.raw_original = self.raw.copy()
             self.sfreq = sfreq
             self.channel_names = ch_names
+            self.cue_offset_s = trigger_pos / sfreq
             self.processing_log = [
                 f"File recoveriX dimuat: {len(ch_names)} channel, "
                 f"{data_volts.shape[1]} sampel "

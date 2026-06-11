@@ -166,6 +166,7 @@ function SingleFilePage() {
   const [erdEnabled, setErdEnabled] = useState(false);
   const [erdBaseline, setErdBaseline] = useState('');
   const [erdTarget, setErdTarget] = useState('');
+  const [erdIntraTrial, setErdIntraTrial] = useState(false);
   const [subbandSel, setSubbandSel] = useState(['delta', 'theta', 'alpha', 'beta']);
   const [tab, setTab] = useState('raw');
 
@@ -248,7 +249,7 @@ function SingleFilePage() {
       const opts = buildProcessOpts();
       const data = await Api.singleProcess(file, opts);
 
-      if (erdEnabled && erdBaseline && erdTarget) {
+      if (erdEnabled && erdTarget && (erdIntraTrial || erdBaseline)) {
         try {
           const erdData = await Api.singleErd(file, {
             bp_low: opts.bp_low, bp_high: opts.bp_high, bp_order: opts.bp_order,
@@ -257,14 +258,17 @@ function SingleFilePage() {
             use_ica: opts.use_ica, ica_method: opts.ica_method, ica_n: opts.ica_n,
             subbands: opts.subbands,
             channels_filter: opts.channels_filter,
-            baseline_task: erdBaseline,
+            baseline_task: erdIntraTrial ? '' : erdBaseline,
             target_task: erdTarget,
             chunk_mode: extractMode === 'chunk',
             chunk_duration: chunkDur,
+            intra_trial: erdIntraTrial,
           });
           data.erd_records = erdData.erd_records || [];
           if (data.erd_records.length === 0) {
-            data.erd_error = `ERD kosong: tidak ditemukan pasangan "${erdBaseline}" → "${erdTarget}" yang berurutan dalam annotations. Pastikan kedua task ada di file dan urutannya benar.`;
+            data.erd_error = erdIntraTrial
+              ? `ERD kosong: tidak ditemukan trial "${erdTarget}" di file.`
+              : `ERD kosong: tidak ditemukan pasangan "${erdBaseline}" → "${erdTarget}" yang berurutan dalam annotations. Pastikan kedua task ada di file dan urutannya benar.`;
           }
         } catch (erdErr) {
           data.erd_records = [];
@@ -625,19 +629,31 @@ function SingleFilePage() {
                   const taskOpts = meta?.annotations
                     ? Array.from(new Set(meta.annotations.map(a => a.description)))
                     : (results?.tasks || []);
+                  const isRecoverix = meta?.format === 'recoveriX';
                   const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
                   return (
                     <div style={{ marginTop: 10, padding: '12px 14px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>ERD = (Task - Baseline) / Baseline × 100%</div>
+                      {isRecoverix && (
+                        <CheckPill checked={erdIntraTrial} onClick={() => setErdIntraTrial(!erdIntraTrial)}>
+                          Intra-trial baseline (recoverix)
+                        </CheckPill>
+                      )}
+                      {erdIntraTrial ? (
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                          Baseline = periode pre-cue (sebelum motor imagery) tiap trial. Pilih kondisi target di bawah.
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
+                          <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
+                            <option value="">-- pilih --</option>
+                            {taskOpts.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      )}
                       <div>
-                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
-                        <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
-                          <option value="">-- pilih --</option>
-                          {taskOpts.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>{erdIntraTrial ? 'Kondisi (Target)' : 'Target Task'}</div>
                         <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
                           <option value="">-- pilih --</option>
                           {taskOpts.map(t => <option key={t} value={t}>{t}</option>)}
@@ -735,7 +751,7 @@ function SingleFilePage() {
                   results={results} error={apiError}
                   extractMode={extractMode} chunkDur={chunkDur}
                   erdEnabled={erdEnabled}
-                  erdBaseline={erdBaseline} erdTarget={erdTarget}
+                  erdBaseline={erdBaseline} erdTarget={erdTarget} erdIntraTrial={erdIntraTrial}
                   onDownloadCSV={handleDownloadCSV}
                   onDownloadExcel={handleExportExcel}
                 />
@@ -1056,7 +1072,7 @@ function ErdTable({ records, baseline, target }) {
   );
 }
 
-function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdEnabled, erdBaseline, erdTarget, onDownloadCSV, onDownloadExcel }) {
+function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdEnabled, erdBaseline, erdTarget, erdIntraTrial, onDownloadCSV, onDownloadExcel }) {
   const [page, setPage] = useState(0);
   const [taskFilter, setTaskFilter] = useState('all');
   const [subbandFilter, setSubbandFilter] = useState('all');
@@ -1183,7 +1199,7 @@ function FiturTab({ done, processing, results, error, extractMode, chunkDur, erd
 
       {erdEnabled && (
         (results.erd_records || []).length > 0
-          ? <ErdTable records={results.erd_records} baseline={erdBaseline} target={erdTarget} />
+          ? <ErdTable records={results.erd_records} baseline={erdIntraTrial ? 'pre-cue' : erdBaseline} target={erdTarget} />
           : (
             <div style={{ marginTop: 32, padding: '12px 16px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12.5 }}>
               <strong>ERD/ERS:</strong> {results.erd_error || 'Tidak ada data ERD. Pastikan baseline dan target task sudah dipilih dan ada di file.'}
