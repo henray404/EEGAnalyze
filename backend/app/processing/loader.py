@@ -482,21 +482,37 @@ class EEGLoader:
         )
 
     def load_recoverix_zip(self, zip_buffer):
-        """Load arsip ZIP sesi recoveriX (berisi rawData1/2/3.tar.gz).
+        """Load arsip ZIP berisi SATU sesi recoveriX (rawData1/2/3.tar.gz).
+
+        Wrapper tipis di atas `load_recoverix_session`: cari tar_names lewat
+        `find_rawdata_tars` (scan global, asumsikan 1 sesi per ZIP).
+        """
+        try:
+            with zipfile.ZipFile(zip_buffer, "r") as zf:
+                tar_names = recoverix.find_rawdata_tars(zf.namelist())
+            if not tar_names:
+                raise ValueError(
+                    "Bukan arsip sesi recoveriX (tidak ada rawData*.tar.gz)."
+                )
+        except Exception as exc:
+            raise RuntimeError(f"Gagal memuat arsip recoveriX: {exc}") from exc
+
+        return self.load_recoverix_session(zip_buffer, tar_names)
+
+    def load_recoverix_session(self, zip_buffer, tar_names):
+        """Load satu sesi recoveriX dari daftar tar_names eksplisit.
 
         Gabung semua blok rawData jadi satu RawArray, dengan annotations
         Left/Right dari daftar trial. Setelah ini, self.raw identik dengan
         hasil load EDF sehingga seluruh pipeline existing dapat dipakai.
+
+        Dipanggil per-sesi oleh batch recoverix (1 ZIP bisa berisi banyak
+        sesi/pasien) maupun oleh `load_recoverix_zip` (ZIP 1 sesi).
         """
         try:
             self._cleanup_tmp()
 
             with zipfile.ZipFile(zip_buffer, "r") as zf:
-                tar_names = recoverix.find_rawdata_tars(zf.namelist())
-                if not tar_names:
-                    raise ValueError(
-                        "Bukan arsip sesi recoveriX (tidak ada rawData*.tar.gz)."
-                    )
                 blocks = [
                     recoverix.read_block_from_tar(zf.read(name))
                     for name in tar_names
@@ -542,6 +558,12 @@ class EEGLoader:
 
         except Exception as exc:
             raise RuntimeError(f"Gagal memuat arsip recoveriX: {exc}") from exc
+
+    @staticmethod
+    def list_recoverix_sessions_in_zip(zip_buffer):
+        """Temukan semua sesi recoveriX (folder berisi rawData*.tar.gz) dalam ZIP."""
+        with zipfile.ZipFile(zip_buffer, "r") as zf:
+            return recoverix.find_recoverix_sessions(zf.namelist())
 
     @staticmethod
     def list_txt_in_zip(zip_buffer):

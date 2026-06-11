@@ -323,3 +323,52 @@ def test_parse_session_path_unknown_run_format():
     assert meta["run"] == "BadRunName"
     assert meta["run_date"] == "unknown"
     assert meta["run_time"] == "unknown"
+
+
+# ----- load_recoverix_session + list_recoverix_sessions_in_zip ----- #
+
+def _make_multi_session_zip():
+    """ZIP berisi 2 sesi recoveriX dengan layout channel berbeda (A vs B)."""
+    xml_a = make_descriptor(
+        ch_names=[f"A{i}" for i in range(16)],
+        trials=[{"flashing_item": 0, "sample_index": 600}],
+    )
+    xml_b = make_descriptor(
+        ch_names=[f"B{i}" for i in range(16)],
+        trials=[{"flashing_item": 1, "sample_index": 700}],
+    )
+    tar_a = make_tar(make_bin(1000, n_eeg=16), xml_a)
+    tar_b = make_tar(make_bin(1000, n_eeg=16), xml_b)
+
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as zf:
+        zf.writestr("sessA/rawData1.tar.gz", tar_a)
+        zf.writestr("sessB/rawData1.tar.gz", tar_b)
+    zbuf.seek(0)
+    return zbuf
+
+
+def test_list_recoverix_sessions_in_zip():
+    from app.processing.loader import EEGLoader
+    sessions = EEGLoader.list_recoverix_sessions_in_zip(_make_multi_session_zip())
+    assert len(sessions) == 2
+    assert sessions[0]["session_dir"] == "sessA"
+    assert sessions[0]["tar_names"] == ["sessA/rawData1.tar.gz"]
+    assert sessions[1]["session_dir"] == "sessB"
+    assert sessions[1]["tar_names"] == ["sessB/rawData1.tar.gz"]
+
+
+def test_load_recoverix_session_isolates_sessions():
+    from app.processing.loader import EEGLoader
+    zbuf = _make_multi_session_zip()
+    sessions = EEGLoader.list_recoverix_sessions_in_zip(zbuf)
+
+    loader_a = EEGLoader()
+    loader_a.load_recoverix_session(zbuf, sessions[0]["tar_names"])
+    assert loader_a.channel_names[0] == "A0"
+    assert loader_a.get_task_list() == ["Right"]  # flashing_item 0 = Right
+
+    loader_b = EEGLoader()
+    loader_b.load_recoverix_session(zbuf, sessions[1]["tar_names"])
+    assert loader_b.channel_names[0] == "B0"
+    assert loader_b.get_task_list() == ["Left"]  # flashing_item 1 = Left
