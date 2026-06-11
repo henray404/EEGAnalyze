@@ -63,6 +63,50 @@ window.Api = {
   batchProcess(file, opts) {
     return _postForm('/api/batch/process', { file, ...opts });
   },
+  // Streaming NDJSON: panggil onProgress(processed, total) tiap file selesai,
+  // return payload result terakhir. Progress nyata, bukan estimasi.
+  async batchProcessStream(file, opts, onProgress) {
+    const res = await fetch(_api('/api/batch/process'), {
+      method: 'POST', body: _buildForm({ file, ...opts }),
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let result = null;
+
+    const handleLine = (line) => {
+      const s = line.trim();
+      if (!s) return;
+      let evt;
+      try { evt = JSON.parse(s); } catch { return; }
+      if (evt.type === 'progress') {
+        if (onProgress) onProgress(evt.processed, evt.total);
+      } else if (evt.type === 'result') {
+        result = evt;
+      } else if (evt.type === 'error') {
+        throw new Error(evt.detail || 'Batch gagal');
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        handleLine(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+      }
+    }
+    handleLine(buf);
+
+    if (!result) throw new Error('Tidak ada hasil dari server');
+    return result;
+  },
 
   // ===== ML =====
   mlUpload(file) {
@@ -105,6 +149,27 @@ window.downloadBlob = (blob, filename) => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+};
+
+// Pisah records jadi list of sheets per scenario untuk export Excel multi-tab.
+// Jika records tidak punya field scenario (mis. single file upload), kembalikan
+// satu sheet dengan nama fallback.
+window.recordsToScenarioSheets = (records, fallbackName = 'Features') => {
+  if (!records || !records.length) return [];
+  const hasScenario = 'scenario' in records[0]
+    && records.some(r => r.scenario != null && String(r.scenario).trim() !== '');
+  if (!hasScenario) return [{ name: fallbackName, records }];
+
+  const groups = new Map();
+  for (const rec of records) {
+    const raw = rec.scenario;
+    const key = (raw == null || String(raw).trim() === '') ? 'unknown' : String(raw);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(rec);
+  }
+  return Array.from(groups.entries())
+    .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+    .map(([name, recs]) => ({ name, records: recs }));
 };
 
 window.downloadCSV = (records, filename) => {
