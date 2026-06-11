@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import single_file, batch, export, ml
+from app.routers import single_file, batch, batch_recoverix, export, ml
 
 app = FastAPI(title="EEG Analysis API", version="2.0.0")
 
@@ -15,6 +15,7 @@ app.add_middleware(
 
 app.include_router(single_file.router, prefix="/api/single", tags=["single-file"])
 app.include_router(batch.router, prefix="/api/batch", tags=["batch"])
+app.include_router(batch_recoverix.router, prefix="/api/batch", tags=["batch-recoverix"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
 app.include_router(ml.router, prefix="/api/ml", tags=["machine-learning"])
 
