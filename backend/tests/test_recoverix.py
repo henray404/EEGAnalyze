@@ -250,3 +250,76 @@ def test_compute_erd_ers_intratrial_no_cue_offset():
         None, pd.DataFrame(), ["C0"], "Left", cue_offset_s=None,
     )
     assert result.empty
+
+
+# ----- find_recoverix_sessions ----- #
+
+def test_find_recoverix_sessions_groups_by_dir():
+    names = [
+        "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523/rawData2.tar.gz",
+        "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523/rawData1.tar.gz",
+        "ltk-x/22May2026-demo/54664/yiwan/ScenarioB/20260522_094332/rawData1.tar.gz",
+        "ltk-x/22May2026-demo/54664/yiwan/ScenarioB/20260522_094332/rawData2.tar.gz",
+        "ltk-x/22May2026-demo/results.bin",
+    ]
+    sessions = recoverix.find_recoverix_sessions(names)
+    assert len(sessions) == 2
+
+    sess0 = sessions[0]
+    assert sess0["session_dir"] == "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523"
+    assert sess0["tar_names"] == [
+        "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523/rawData1.tar.gz",
+        "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523/rawData2.tar.gz",
+    ]
+
+    sess1 = sessions[1]
+    assert sess1["session_dir"] == "ltk-x/22May2026-demo/54664/yiwan/ScenarioB/20260522_094332"
+    assert sess1["tar_names"] == [
+        "ltk-x/22May2026-demo/54664/yiwan/ScenarioB/20260522_094332/rawData1.tar.gz",
+        "ltk-x/22May2026-demo/54664/yiwan/ScenarioB/20260522_094332/rawData2.tar.gz",
+    ]
+
+
+def test_find_recoverix_sessions_empty_when_no_tars():
+    assert recoverix.find_recoverix_sessions(["a/results.bin", "a/notes.txt"]) == []
+
+
+# ----- parse_session_path ----- #
+
+def test_parse_session_path_basic():
+    session_dir = "ltk-x/22May2026-demo/47822/yani/ScenarioA/20260522_103523"
+    meta = recoverix.parse_session_path(session_dir)
+    assert meta == {
+        "event": "22May2026-demo",
+        "subject": "47822",
+        "subject_name": "yani",
+        "scenario": "ScenarioA",
+        "run": "20260522_103523",
+        "run_date": "2026-05-22",
+        "run_time": "10:35:23",
+    }
+
+
+def test_parse_session_path_too_short_returns_unknown():
+    meta = recoverix.parse_session_path("onlyonefolder")
+    assert meta == {
+        "event": "unknown",
+        "subject": "unknown",
+        "subject_name": "unknown",
+        "scenario": "unknown",
+        "run": "unknown",
+        "run_date": "unknown",
+        "run_time": "unknown",
+    }
+
+
+def test_parse_session_path_unknown_run_format():
+    session_dir = "ltk-x/22May2026-demo/47822/yani/ScenarioA/BadRunName"
+    meta = recoverix.parse_session_path(session_dir)
+    assert meta["event"] == "22May2026-demo"
+    assert meta["subject"] == "47822"
+    assert meta["subject_name"] == "yani"
+    assert meta["scenario"] == "ScenarioA"
+    assert meta["run"] == "BadRunName"
+    assert meta["run_date"] == "unknown"
+    assert meta["run_time"] == "unknown"

@@ -7,6 +7,7 @@ struktur trial, siap dibungkus jadi MNE RawArray oleh EEGLoader.
 """
 
 import io
+import os
 import re
 import tarfile
 import xml.etree.ElementTree as ET
@@ -79,6 +80,78 @@ def find_rawdata_tars(namelist):
             found.append((int(m.group(1)), name))
     found.sort()
     return [name for _, name in found]
+
+
+def find_recoverix_sessions(namelist):
+    """Kelompokkan rawData*.tar.gz dalam ZIP berdasarkan folder induk (sesi).
+
+    Tiap sesi = satu folder yang berisi rawData*.tar.gz miliknya sendiri.
+    Tiap grup di-sort numerik berdasarkan nomor blok (rawData1, rawData2, ...).
+
+    Returns
+    -------
+    list[dict]  [{"session_dir": str, "tar_names": list[str]}], urut session_dir.
+    """
+    sessions = {}
+    for name in namelist:
+        m = _TAR_PATTERN.search(name)
+        if not m:
+            continue
+        session_dir = os.path.dirname(name)
+        sessions.setdefault(session_dir, []).append((int(m.group(1)), name))
+
+    result = []
+    for session_dir in sorted(sessions.keys()):
+        tar_names = [name for _, name in sorted(sessions[session_dir])]
+        result.append({"session_dir": session_dir, "tar_names": tar_names})
+    return result
+
+
+_RUN_PATTERN = re.compile(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$")
+
+
+def parse_session_path(session_dir):
+    """Parse path sesi recoveriX jadi metadata.
+
+    Format yang diharapkan (5 komponen terakhir):
+        <event>/<patient_id>/<patient_name>/<scenario>/<run YYYYMMDD_HHMMSS>
+
+    Kalau path punya kurang dari 5 komponen, semua field "unknown".
+    Kalau komponen terakhir tidak match format run, field run_date/run_time
+    "unknown" tapi event/subject/subject_name/scenario/run tetap diisi -
+    sesi tetap diproses, tidak di-skip.
+    """
+    parts = [p for p in session_dir.replace("\\", "/").split("/") if p]
+
+    unknown = {
+        "event": "unknown", "subject": "unknown", "subject_name": "unknown",
+        "scenario": "unknown", "run": "unknown",
+        "run_date": "unknown", "run_time": "unknown",
+    }
+    if len(parts) < 5:
+        return unknown
+
+    run, scenario, subject_name, subject, event = parts[-1], parts[-2], parts[-3], parts[-4], parts[-5]
+
+    m = _RUN_PATTERN.match(run)
+    if not m:
+        result = dict(unknown)
+        result.update({
+            "event": event, "subject": subject, "subject_name": subject_name,
+            "scenario": scenario, "run": run,
+        })
+        return result
+
+    y, mo, d, h, mi, s = m.groups()
+    return {
+        "event": event,
+        "subject": subject,
+        "subject_name": subject_name,
+        "scenario": scenario,
+        "run": run,
+        "run_date": f"{y}-{mo}-{d}",
+        "run_time": f"{h}:{mi}:{s}",
+    }
 
 
 def read_block_from_tar(tar_bytes):
