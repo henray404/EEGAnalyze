@@ -120,11 +120,15 @@ function BatchPage() {
   const [file, setFile] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
-  const [scanMeta, setScanMeta] = useState(null); // {total_files, categories, subjects, scenarios, tasks, channels}
+  const [scanMeta, setScanMeta] = useState(null); // {data_type, total_files|total_sessions, ...}
+  const [dataType, setDataType] = useState('edf'); // 'edf' | 'recoverix'
   const [uploadError, setUploadError] = useState(null);
   const [kategori, setKategori] = useState(['ALS', 'Normal']);
+  const [subjects, setSubjects] = useState([]); // filter subjek (recoveriX)
   const [scenario, setScenario] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [bandpass, setBandpass] = useState(true); // toggle bandpass (recoveriX; EDF selalu on)
+  const [erdMethods, setErdMethods] = useState(['intratrial', 'paired']); // metode ERD recoveriX
   const [subbands, setSubbands] = useState(['delta', 'theta', 'alpha', 'beta']);
   const [channels, setChannels] = useState([]);
   const [features, setFeatures] = useState(['mav', 'variance', 'std']);
@@ -154,10 +158,12 @@ function BatchPage() {
   const [exporting, setExporting] = useState(false);
   const fileInputRef = useRefB(null);
 
+  const isRecoverix = dataType === 'recoverix';
   const allChannelsBatch = scanMeta?.channels?.length ? scanMeta.channels : DEFAULT_CHANNELS_B;
   const allTasksBatch = scanMeta?.tasks?.length ? scanMeta.tasks : ['T1', 'T2', 'T3', 'T4'];
-  const totalFiles = scanMeta?.total_files || 0;
+  const totalFiles = scanMeta?.total_files ?? scanMeta?.total_sessions ?? 0;
   const totalSubjects = scanMeta?.subjects?.length || 0;
+  const unitLabel = isRecoverix ? 'sesi' : 'file';
 
   const handleUpload = async (f) => {
     if (!f) return;
@@ -169,11 +175,23 @@ function BatchPage() {
     setResults(null);
     try {
       const data = await Api.batchScan(f);
+      const dt = data.data_type || 'edf';
+      setDataType(dt);
       setScanMeta(data);
       setTasks(data.tasks || []);
       setChannels((data.channels || []).slice(0, 8));
-      setKategori(data.categories || ['ALS', 'Normal']);
       setScenario(data.scenarios || []);
+      if (dt === 'recoverix') {
+        setSubjects(data.subjects || []);
+        setKategori([]);
+        // Data recoveriX sudah difilter di device: semua filter sinyal default OFF.
+        setBandpass(false); setNotch(false); setCar(false); setAmp(false);
+        setBad(false); setIca(false);
+        setExtractMode('full');
+      } else {
+        setKategori(data.categories || ['ALS', 'Normal']);
+        setBandpass(true); setNotch(true);
+      }
       setScanned(true);
     } catch (e) {
       setUploadError(e.message || 'Gagal scan ZIP. Pastikan backend berjalan.');
@@ -197,6 +215,7 @@ function BatchPage() {
         bp_low: AppConfigB.BP_DEFAULT_LOW,
         bp_high: AppConfigB.BP_DEFAULT_HIGH,
         bp_order: AppConfigB.BP_DEFAULT_ORDER,
+        use_bandpass: isRecoverix ? bandpass : true,
         use_notch: notch,
         notch_freq: notchHz,
         use_car: car,
@@ -216,7 +235,9 @@ function BatchPage() {
         erd_compare_enabled: erdCompare,
         erd_compare_baseline: 'Resting',
         erd_compare_tasks: 'Resting,Thinking',
+        recoverix_erd_methods: erdMethods.join(','),
         filter_categories: kategori.join(','),
+        filter_subjects: subjects.join(','),
         filter_scenarios: scenario.join(','),
         filter_tasks: tasks.join(','),
         filter_channels: channels.join(','),
@@ -225,7 +246,7 @@ function BatchPage() {
         setProgress(total > 0 ? Math.round((processed / total) * 100) : 0);
       });
       setResults(data);
-      setFilesProcessed(data.processed_files || totalFiles);
+      setFilesProcessed(data.processed_files ?? data.processed_sessions ?? totalFiles);
       setProgress(100);
       setDone(true);
     } catch (e) {
@@ -339,12 +360,15 @@ function BatchPage() {
                   )}
                   {scanned && scanMeta && (
                     <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      <ScanRow label="Total file EDF" value={scanMeta.total_files} />
-                      <ScanRow label="Kategori" value={
-                        <>{(scanMeta.categories || []).map(c => (
-                          <span key={c} className={`badge ${c === 'ALS' ? 'badge-als' : c === 'Normal' ? 'badge-normal' : 'badge-accent'}`} style={{ marginRight: 4 }}>{c}</span>
-                        ))}</>
-                      } />
+                      <ScanRow label={isRecoverix ? 'Tipe data' : 'Total file EDF'} value={isRecoverix ? <span className="badge badge-accent">recoveriX</span> : scanMeta.total_files} />
+                      {isRecoverix && <ScanRow label="Total sesi" value={scanMeta.total_sessions} />}
+                      {!isRecoverix && (
+                        <ScanRow label="Kategori" value={
+                          <>{(scanMeta.categories || []).map(c => (
+                            <span key={c} className={`badge ${c === 'ALS' ? 'badge-als' : c === 'Normal' ? 'badge-normal' : 'badge-accent'}`} style={{ marginRight: 4 }}>{c}</span>
+                          ))}</>
+                        } />
+                      )}
                       <ScanRow label="Subjek" value={(scanMeta.subjects || []).length} />
                       {(scanMeta.scenarios || []).length > 0 && (
                         <ScanRow label="Scenario" wrapValue value={
@@ -378,17 +402,33 @@ function BatchPage() {
                   <span className="eyebrow">STEP 02</span>
                   <h3>Filter Dataset</h3>
                 </div>
-                <FilterGroupB label="Kategori" counter={`${kategori.length}/${(scanMeta?.categories || ['ALS', 'Normal']).length}`}>
-                  <ChipGroupB options={scanMeta?.categories || ['ALS', 'Normal']} value={kategori} onChange={setKategori} />
-                </FilterGroupB>
+                {!isRecoverix && (
+                  <FilterGroupB label="Kategori" counter={`${kategori.length}/${(scanMeta?.categories || ['ALS', 'Normal']).length}`}>
+                    <ChipGroupB options={scanMeta?.categories || ['ALS', 'Normal']} value={kategori} onChange={setKategori} />
+                  </FilterGroupB>
+                )}
+                {isRecoverix && (scanMeta?.subjects || []).length > 0 && (
+                  <FilterGroupB label="Subjek" counter={`${subjects.length}/${(scanMeta?.subjects || []).length}`}>
+                    <ChipGroupB options={scanMeta.subjects} value={subjects} onChange={setSubjects} />
+                  </FilterGroupB>
+                )}
                 {(scanMeta?.scenarios || []).length > 0 && (
                   <FilterGroupB label="Scenario" counter={`${scenario.length}/${(scanMeta?.scenarios || []).length}`}>
                     <ChipGroupB options={scanMeta.scenarios} value={scenario} onChange={setScenario} />
                   </FilterGroupB>
                 )}
-                <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length}`}>
-                  <ChipGroupB options={allTasksBatch} value={tasks} onChange={setTasks} />
-                </FilterGroupB>
+                {!isRecoverix ? (
+                  <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length}`}>
+                    <ChipGroupB options={allTasksBatch} value={tasks} onChange={setTasks} />
+                  </FilterGroupB>
+                ) : (
+                  <FilterGroupB label="Task">
+                    <div className="chip-group">
+                      {allTasksBatch.map(t => <span key={t} className="chip selected" style={{ opacity: 0.7 }}>{t}</span>)}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>recoveriX: kondisi Left/Right tetap.</div>
+                  </FilterGroupB>
+                )}
                 <FilterGroupB label="Subband" counter={`${subbands.length}/5`}>
                   <ChipGroupB options={SUBBANDS_B} value={subbands} onChange={setSubbands} />
                 </FilterGroupB>
@@ -411,32 +451,66 @@ function BatchPage() {
                     { id: 'band_power', name: 'Band Power' }, { id: 'relative_power', name: 'Rel. Power' }, { id: 'peak_frequency', name: 'Peak Freq' },
                   ]} value={features} onChange={setFeatures} />
                 </FilterGroupB>
-                <div className="form-row">
-                  <label>ERD/ERS</label>
-                  <ToggleRowB on={erdEnabled} onChange={v => { setErdEnabled(v); if (!v) { setErdBaseline(''); setErdTarget(''); } }} label="Hitung ERD/ERS" />
-                  {erdEnabled && (() => {
-                    const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
-                    return (
-                      <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ERD = (Task - Baseline) / Baseline × 100%</div>
-                        <div>
-                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
-                          <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
-                            <option value="">-- pilih --</option>
-                            {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
+                {!isRecoverix ? (
+                  <div className="form-row">
+                    <label>ERD/ERS</label>
+                    <ToggleRowB on={erdEnabled} onChange={v => { setErdEnabled(v); if (!v) { setErdBaseline(''); setErdTarget(''); } }} label="Hitung ERD/ERS" />
+                    {erdEnabled && (() => {
+                      const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
+                      return (
+                        <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ERD = (Task - Baseline) / Baseline × 100%</div>
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
+                            <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
+                              <option value="">-- pilih --</option>
+                              {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
+                            <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
+                              <option value="">-- pilih --</option>
+                              {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
                         </div>
-                        <div>
-                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
-                          <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
-                            <option value="">-- pilih --</option>
-                            {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
+                      );
+                    })()}
+                  </div>
+                ) : (
+                  <div className="form-row">
+                    <label>ERD/ERS (recoveriX)</label>
+                    <ChipGroupB
+                      options={[{ id: 'intratrial', name: 'Intra-trial' }, { id: 'paired', name: 'Paired' }]}
+                      value={erdMethods} onChange={setErdMethods}
+                    />
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      Intra-trial: pre-cue vs post-cue per kondisi. Paired: baseline task vs target task.
+                    </div>
+                    {erdMethods.includes('paired') && (() => {
+                      const selStyle = { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12.5, width: '100%', marginTop: 4 };
+                      return (
+                        <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface-tint)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Baseline Task</div>
+                            <select value={erdBaseline} onChange={e => setErdBaseline(e.target.value)} style={selStyle}>
+                              <option value="">-- pilih --</option>
+                              {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>Target Task</div>
+                            <select value={erdTarget} onChange={e => setErdTarget(e.target.value)} style={selStyle}>
+                              <option value="">-- pilih --</option>
+                              {allTasksBatch.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })()}
-                </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             )}
 
@@ -447,15 +521,25 @@ function BatchPage() {
                   <span className="eyebrow">STEP 03</span>
                   <h3>Filter Sinyal</h3>
                 </div>
-                <div className="sub-card">
-                  <div className="row-between mb-12">
-                    <span style={{ fontSize: 13.5, fontWeight: 600 }}>Bandpass Filter</span>
+                {isRecoverix && (
+                  <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--accent-tint)', color: 'var(--accent)', borderRadius: 10, fontSize: 11.5 }}>
+                    Data recoveriX sudah difilter di perangkat (HP 0.5 / LP 30 / Notch 50 Hz). Filter di bawah opsional, default OFF.
                   </div>
-                  <div className="chip-group">
-                    <button className={`chip ${filterMode === 'preset' ? 'selected' : ''}`} onClick={() => setFilterMode('preset')}>Preset Subband</button>
-                    <button className={`chip ${filterMode === 'custom' ? 'selected' : ''}`} onClick={() => setFilterMode('custom')}>Custom Range</button>
+                )}
+                {isRecoverix && (
+                  <div className="sub-card"><ToggleRowB on={bandpass} onChange={setBandpass} label="Bandpass Filter" /></div>
+                )}
+                {!isRecoverix && (
+                  <div className="sub-card">
+                    <div className="row-between mb-12">
+                      <span style={{ fontSize: 13.5, fontWeight: 600 }}>Bandpass Filter</span>
+                    </div>
+                    <div className="chip-group">
+                      <button className={`chip ${filterMode === 'preset' ? 'selected' : ''}`} onClick={() => setFilterMode('preset')}>Preset Subband</button>
+                      <button className={`chip ${filterMode === 'custom' ? 'selected' : ''}`} onClick={() => setFilterMode('custom')}>Custom Range</button>
+                    </div>
                   </div>
-                </div>
+                )}
                 <div className="sub-card">
                   <ToggleRowB on={notch} onChange={setNotch} label="Notch Filter" />
                   {notch && (
@@ -494,8 +578,8 @@ function BatchPage() {
               </div>
             )}
 
-            {/* SECTION 5: Ekstraksi */}
-            {scanned && (
+            {/* SECTION 5: Ekstraksi (chunk hanya untuk EDF; recoveriX full) */}
+            {scanned && !isRecoverix && (
               <div className="side-section">
                 <div className="side-title-row">
                   <span className="eyebrow">STEP 05</span>
@@ -554,7 +638,7 @@ function BatchPage() {
                 { id: 'heatmap',  label: 'Heatmap' },
                 { id: 'scatter',  label: 'Scatter' },
                 ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
-                ...(erdEnabled ? [{ id: 'erd', label: 'ERD/ERS' }] : []),
+                ...((isRecoverix ? erdMethods.length > 0 : erdEnabled) ? [{ id: 'erd', label: 'ERD/ERS' }] : []),
                 ...(results?.mode === 'chunk' ? [{ id: 'chunk-compare', label: 'Chunk Kondisi' }] : []),
                 { id: 'data',     label: 'Data Table' },
                 { id: 'sum',      label: 'Ringkasan' },
@@ -705,7 +789,10 @@ function BatchResultStrip({ results, totalSubjects }) {
 }
 
 function BatchErdTab({ results, baseline, target }) {
-  const records = results?.erd_records || [];
+  const isRec = results?.data_type === 'recoverix';
+  const records = isRec
+    ? [...(results?.erd_records || []), ...(results?.erd_paired_records || [])]
+    : (results?.erd_records || []);
   const [page, setPage] = useState(0);
   const [catFilter, setCatFilter] = useState('all');
   const [sbFilter, setSbFilter] = useState('all');
@@ -715,18 +802,22 @@ function BatchErdTab({ results, baseline, target }) {
     return (
       <div style={{ padding: 24 }}>
         <div style={{ padding: '12px 16px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12.5 }}>
-          Tidak ada data ERD. Pastikan baseline dan target task ada di semua file yang diproses.
+          {isRec
+            ? 'Tidak ada data ERD. Pilih metode ERD (intra-trial/paired) sebelum proses.'
+            : 'Tidak ada data ERD. Pastikan baseline dan target task ada di semua file yang diproses.'}
         </div>
       </div>
     );
   }
 
-  const cats = Array.from(new Set(records.map(r => r.category).filter(Boolean)));
+  // recoveriX: kolom "Kategori" diisi kondisi (Left/Right), "File" diisi session.
+  const catKey = (r) => (isRec ? r.task : r.category);
+  const cats = Array.from(new Set(records.map(catKey).filter(Boolean)));
   const sbs = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
   const hasChunk = records.some(r => r.chunk != null);
 
   const filtered = records.filter(r =>
-    (catFilter === 'all' || r.category === catFilter) &&
+    (catFilter === 'all' || catKey(r) === catFilter) &&
     (sbFilter === 'all' || r.subband === sbFilter),
   );
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -747,7 +838,9 @@ function BatchErdTab({ results, baseline, target }) {
         <div>
           <span style={{ fontWeight: 700, fontSize: 15 }}>ERD/ERS Batch</span>
           <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 10 }}>
-            Baseline: <strong>{baseline}</strong> → Target: <strong>{target}</strong>
+            {isRec
+              ? 'recoveriX: intra-trial (pre/post-cue) + paired (Left/Right)'
+              : <>Baseline: <strong>{baseline}</strong> → Target: <strong>{target}</strong></>}
           </span>
           <span className="chip-mini" style={{ marginLeft: 10 }}>{records.length} records</span>
         </div>
@@ -766,7 +859,7 @@ function BatchErdTab({ results, baseline, target }) {
       <div className="row mb-16" style={{ gap: 8 }}>
         <select className="fpill" value={catFilter} onChange={e => { setCatFilter(e.target.value); setPage(0); }}
           style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)' }}>
-          <option value="all">Kategori: All</option>
+          <option value="all">{isRec ? 'Kondisi: All' : 'Kategori: All'}</option>
           {cats.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select className="fpill" value={sbFilter} onChange={e => { setSbFilter(e.target.value); setPage(0); }}
@@ -779,7 +872,7 @@ function BatchErdTab({ results, baseline, target }) {
         <table className="dt">
           <thead>
             <tr>
-              <th>Kategori</th><th>Subject</th><th>File</th>
+              <th>{isRec ? 'Kondisi' : 'Kategori'}</th><th>Subject</th><th>{isRec ? 'Session' : 'File'}</th>
               <th>Channel</th><th>Subband</th>
               {hasChunk && <th className="num">Chunk</th>}
               <th className="num">Baseline Power</th>
@@ -792,10 +885,11 @@ function BatchErdTab({ results, baseline, target }) {
             {pageRows.map((r, i) => {
               const pct = r.erd_ers_pct;
               const isErd = pct < 0;
-              const fname = (r.filename || '').split('/').pop();
+              const fname = (r.filename || r.session || '').split('/').pop();
+              const catVal = catKey(r);
               return (
                 <tr key={safePage * pageSize + i}>
-                  <td><span className={`badge ${r.category === 'ALS' ? 'badge-als' : r.category === 'Normal' ? 'badge-normal' : 'badge-accent'}`}>{r.category}</span></td>
+                  <td><span className={`badge ${catVal === 'ALS' ? 'badge-als' : catVal === 'Normal' ? 'badge-normal' : 'badge-accent'}`}>{catVal || '-'}</span></td>
                   <td>{r.subject || '-'}</td>
                   <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{fname}</td>
                   <td>{r.channel}</td>

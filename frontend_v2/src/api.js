@@ -108,14 +108,6 @@ window.Api = {
     return result;
   },
 
-  // ===== Batch recoveriX =====
-  batchRecoverixScan(file) {
-    return _postForm('/api/batch/recoverix/scan', { file });
-  },
-  batchRecoverixProcessStream(file, opts, onProgress) {
-    return this.batchProcessStream(file, opts, onProgress, '/api/batch/recoverix/process');
-  },
-
   // ===== ML =====
   mlUpload(file) {
     return _postForm('/api/ml/upload', { file });

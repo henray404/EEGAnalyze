@@ -9,8 +9,8 @@ from tests.test_recoverix import make_descriptor, make_tar, make_bin
 
 client = TestClient(app)
 
-SCAN_URL = "/api/batch/recoverix/scan"
-PROCESS_URL = "/api/batch/recoverix/process"
+SCAN_URL = "/api/batch/scan"
+PROCESS_URL = "/api/batch/process"
 
 
 def _session_tar(flashing_item, ch_names=None):
@@ -46,6 +46,7 @@ def test_scan_recoverix_two_sessions():
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
+    assert data["data_type"] == "recoverix"
     assert data["total_sessions"] == 2
     assert set(data["subjects"]) == {"111", "222"}
     assert set(data["scenarios"]) == {"ScenarioA", "ScenarioB"}
@@ -95,6 +96,7 @@ def test_process_recoverix_two_sessions():
     result = events[-1]
 
     assert result["type"] == "result"
+    assert result["data_type"] == "recoverix"
     assert result["total_sessions"] == 2
     assert result["processed_sessions"] == 2
     assert result["errors"] == []
@@ -135,3 +137,52 @@ def test_process_recoverix_no_match_returns_error_event():
     lines = [l for l in resp.text.strip().split("\n") if l]
     result = json.loads(lines[-1])
     assert result["type"] == "error"
+
+
+def test_process_recoverix_paired_erd():
+    resp = client.post(
+        PROCESS_URL,
+        files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
+        data={
+            "subbands": "alpha", "features": "mav",
+            "recoverix_erd_methods": "paired",
+            "erd_baseline_task": "Left", "erd_target_task": "Right",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    result = json.loads(lines[-1])
+    assert result["type"] == "result"
+    # Metode paired terpilih: intra-trial tidak dihitung, paired dihitung.
+    assert result["erd_records"] == []
+    assert "erd_paired_records" in result
+
+
+def test_process_recoverix_intratrial_only_skips_paired():
+    resp = client.post(
+        PROCESS_URL,
+        files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
+        data={
+            "subbands": "alpha", "features": "mav",
+            "recoverix_erd_methods": "intratrial",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    result = json.loads(lines[-1])
+    assert result["type"] == "result"
+    assert len(result["erd_records"]) > 0
+    assert result["erd_paired_records"] == []
+
+
+def test_scan_edf_still_reports_data_type_edf():
+    # ZIP tanpa EDF & tanpa sesi recoveriX -> 422 (bukan crash).
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as zf:
+        zf.writestr("notes/readme.txt", "kosong")
+    zbuf.seek(0)
+    resp = client.post(
+        SCAN_URL,
+        files={"file": ("x.zip", zbuf.getvalue(), "application/zip")},
+    )
+    assert resp.status_code == 422
