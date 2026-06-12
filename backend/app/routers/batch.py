@@ -1,6 +1,7 @@
 import io
 import os
 import json
+import math
 import asyncio
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -20,6 +21,28 @@ RECOVERIX_TASKS = ["Left", "Right"]
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _sanitize(o):
+    """Ubah NaN/Infinity (float non-finite) jadi None secara rekursif.
+
+    json.dumps stdlib emit token `NaN`/`Infinity` yang BUKAN JSON valid,
+    sehingga JSON.parse di browser gagal dan event result terbuang diam-diam
+    ("Tidak ada hasil dari server"). Data EEG asli bisa hasilkan NaN/Inf
+    (mis. power 0 -> pembagian), jadi semua payload dibersihkan dulu.
+    """
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _sanitize(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_sanitize(v) for v in o]
+    return o
+
+
+def _jdump(obj):
+    """Serialize ke JSON aman: NaN/Inf -> null."""
+    return json.dumps(_sanitize(obj))
 
 
 # ------------------------------------------------------------------ #
@@ -416,7 +439,7 @@ def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_fil
 
     async def event_generator():
         if total == 0:
-            yield json.dumps({
+            yield _jdump({
                 "type": "error",
                 "detail": "Tidak ada sesi recoveriX yang cocok dengan filter",
             }) + "\n"
@@ -472,7 +495,7 @@ def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_fil
             item = await queue.get()
             if item.get("type") == "_done":
                 break
-            yield json.dumps(item) + "\n"
+            yield _jdump(item) + "\n"
 
         rec_all, erd_all, erd_paired_all, errs = [], [], [], []
         for res in results:
@@ -486,13 +509,13 @@ def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_fil
             erd_paired_all.extend(res.get("erd_paired_records", []))
 
         if not rec_all and not erd_all and not erd_paired_all:
-            yield json.dumps({
+            yield _jdump({
                 "type": "error",
                 "detail": f"Gagal memproses semua sesi recoveriX. Errors: {errs[:3]}",
             }) + "\n"
             return
 
-        yield json.dumps({
+        yield _jdump({
             "type": "result",
             "data_type": "recoverix",
             "records": rec_all,
@@ -636,7 +659,7 @@ async def process_batch(
           {"type":"error","detail":"..."}
         """
         if total == 0:
-            yield json.dumps({
+            yield _jdump({
                 "type": "error",
                 "detail": "Tidak ada file EDF yang cocok dengan filter",
             }) + "\n"
@@ -697,7 +720,7 @@ async def process_batch(
             item = await queue.get()
             if item.get("type") == "_done":
                 break
-            yield json.dumps(item) + "\n"
+            yield _jdump(item) + "\n"
 
         # Agregasi hasil sesuai urutan file asli (deterministik).
         rec_all, enc_all, erd_all, erd_cmp_all, errs = [], [], [], [], []
@@ -713,13 +736,13 @@ async def process_batch(
             erd_cmp_all.extend(res.get("erd_compare", []))
 
         if not rec_all:
-            yield json.dumps({
+            yield _jdump({
                 "type": "error",
                 "detail": f"Gagal memproses semua file EDF. Errors: {errs[:3]}",
             }) + "\n"
             return
 
-        yield json.dumps({
+        yield _jdump({
             "type": "result",
             "data_type": "edf",
             "records": rec_all,
