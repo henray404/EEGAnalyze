@@ -10,23 +10,29 @@ Fitur baru dari pipeline EEG-ALS- (03_extract_features.py):
 
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, sosfiltfilt
 
 from app.config import DEFAULT_SUBBANDS, DEFAULT_FEATURES, BAND_RATIOS
 from app.processing.psd import PSDAnalyzer
 
 
 def _bandpass_array(data, sfreq, low, high, order=5):
-    """Bandpass filter pada array numpy 1-D."""
+    """Bandpass filter pada array numpy 1-D.
+
+    Pakai second-order sections (SOS) + sosfiltfilt. Bentuk transfer
+    function (b, a) order tinggi tidak stabil secara numerik di subband
+    frekuensi rendah (mis. Delta 0.5-4 Hz pada sfreq 250 -> freq normalized
+    sangat kecil), sehingga filtfilt menghasilkan NaN. SOS jauh lebih stabil.
+    """
     nyq = 0.5 * sfreq
     low_n = max(low / nyq, 0.001)
     high_n = min(high / nyq, 0.999)
-    b, a = butter(order, [low_n, high_n], btype="band")
-    # filtfilt butuh minimal 3*max(len(a), len(b)) samples
-    min_len = 3 * max(len(a), len(b))
+    sos = butter(order, [low_n, high_n], btype="band", output="sos")
+    # sosfiltfilt butuh data lebih panjang dari padlen default.
+    min_len = 3 * (2 * len(sos) + 1)
     if len(data) < min_len:
         return np.zeros_like(data)
-    return filtfilt(b, a, data)
+    return sosfiltfilt(sos, data)
 
 
 class EEGFeatures:
