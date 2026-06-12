@@ -57,11 +57,25 @@ function _emptyTab(title, sub) {
 function _detectFeatureCols(records) {
   if (!records || records.length === 0) return [];
   const exclude = new Set([
-    'category', 'subject', 'scenario', 'filename', 'task', 'channel', 'subband',
-    'chunk_idx', 'chunk_start', 'chunk_end', 'occurrence', 'onset', 'duration',
+    'category', 'subject', 'subject_name', 'scenario', 'event', 'run',
+    'run_date', 'run_time', 'session', 'filename', 'task', 'channel', 'subband',
+    'chunk', 'chunk_idx', 'chunk_start', 'chunk_end', 'occurrence', 'onset', 'duration',
   ]);
-  const first = records[0];
-  return Object.keys(first).filter(k => !exclude.has(k) && typeof first[k] === 'number');
+  // Scan beberapa record (bukan cuma record[0]) supaya kolom fitur tetap
+  // terdeteksi walau nilai di record pertama kebetulan null/NaN.
+  const sampleN = Math.min(records.length, 200);
+  const cols = [];
+  const seen = new Set();
+  for (let i = 0; i < sampleN; i++) {
+    const rec = records[i];
+    if (!rec) continue;
+    for (const k of Object.keys(rec)) {
+      if (seen.has(k) || exclude.has(k)) continue;
+      const v = rec[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) { seen.add(k); cols.push(k); }
+    }
+  }
+  return cols;
 }
 
 function _resolveSubbandNames(records, subbandsPref) {
