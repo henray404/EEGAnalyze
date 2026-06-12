@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Icon, OverviewPage, SingleFilePage, BatchPage, MLPage */
+/* global React, ReactDOM, Icon, OverviewPage, SingleFilePage, BatchPage, BatchRecoverixPage, MLPage */
 const { useState, useEffect } = React;
 
 function Navbar({ page, setPage }) {
@@ -6,6 +6,7 @@ function Navbar({ page, setPage }) {
     { id: 'overview', label: 'Overview' },
     { id: 'single', label: 'Single File' },
     { id: 'batch', label: 'Batch Analysis' },
+    { id: 'batch-recoverix', label: 'Batch recoveriX' },
     { id: 'ml', label: 'Machine Learning' },
   ];
   return (
@@ -41,6 +42,7 @@ function App() {
       {page === 'overview' && <OverviewPage go={setPage} />}
       {page === 'single' && <SingleFilePage />}
       {page === 'batch' && <BatchPage />}
+      {page === 'batch-recoverix' && <BatchRecoverixPage />}
       {page === 'ml' && <MLPage />}
     </>
   );
