@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from tests.test_recoverix import make_descriptor, make_tar, make_bin
 client = TestClient(app)
 
 SCAN_URL = "/api/batch/recoverix/scan"
+PROCESS_URL = "/api/batch/recoverix/process"
 
 
 def _session_tar(flashing_item, ch_names=None):
@@ -78,3 +80,58 @@ def test_scan_recoverix_rejects_corrupt_zip():
         files={"file": ("corrupt.zip", b"this is not a valid zip file content", "application/zip")},
     )
     assert resp.status_code == 422
+
+
+def test_process_recoverix_two_sessions():
+    resp = client.post(
+        PROCESS_URL,
+        files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
+        data={"subbands": "alpha", "features": "mav"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    events = [json.loads(l) for l in lines]
+    result = events[-1]
+
+    assert result["type"] == "result"
+    assert result["total_sessions"] == 2
+    assert result["processed_sessions"] == 2
+    assert result["errors"] == []
+    assert len(result["records"]) > 0
+    assert len(result["erd_records"]) > 0
+
+    rec = result["records"][0]
+    for key in ("subject", "subject_name", "scenario", "event", "run_date", "run_time", "session", "task", "channel", "subband", "mav"):
+        assert key in rec, f"missing key {key} in record: {rec}"
+
+    erd = result["erd_records"][0]
+    assert erd["task"] in ("Left", "Right")
+    assert erd["subband"] == "Alpha"
+    for key in ("subject", "subject_name", "scenario", "session", "channel", "baseline_power", "task_power", "erd_ers_pct"):
+        assert key in erd, f"missing key {key} in erd record: {erd}"
+
+
+def test_process_recoverix_filter_channels():
+    resp = client.post(
+        PROCESS_URL,
+        files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
+        data={"subbands": "alpha", "features": "mav", "filter_channels": "C0"},
+    )
+    assert resp.status_code == 200, resp.text
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    result = json.loads(lines[-1])
+    assert result["type"] == "result"
+    assert all(r["channel"] == "C0" for r in result["records"])
+
+
+def test_process_recoverix_no_match_returns_error_event():
+    resp = client.post(
+        PROCESS_URL,
+        files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
+        data={"filter_subjects": "doesnotexist"},
+    )
+    assert resp.status_code == 200, resp.text
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    result = json.loads(lines[-1])
+    assert result["type"] == "error"
