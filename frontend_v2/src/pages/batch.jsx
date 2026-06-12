@@ -403,22 +403,26 @@ function BatchPage() {
                   <h3>Filter Dataset</h3>
                 </div>
                 {!isRecoverix && (
-                  <FilterGroupB label="Kategori" counter={`${kategori.length}/${(scanMeta?.categories || ['ALS', 'Normal']).length}`}>
+                  <FilterGroupB label="Kategori" counter={`${kategori.length}/${(scanMeta?.categories || ['ALS', 'Normal']).length} dipilih`}
+                    action={<ChipAllRow options={scanMeta?.categories || ['ALS', 'Normal']} onChange={setKategori} />}>
                     <ChipGroupB options={scanMeta?.categories || ['ALS', 'Normal']} value={kategori} onChange={setKategori} />
                   </FilterGroupB>
                 )}
                 {isRecoverix && (scanMeta?.subjects || []).length > 0 && (
-                  <FilterGroupB label="Subjek" counter={`${subjects.length}/${(scanMeta?.subjects || []).length}`}>
+                  <FilterGroupB label="Subjek" counter={`${subjects.length}/${(scanMeta?.subjects || []).length} dipilih`}
+                    action={<ChipAllRow options={scanMeta.subjects} onChange={setSubjects} />}>
                     <ChipGroupB options={scanMeta.subjects} value={subjects} onChange={setSubjects} />
                   </FilterGroupB>
                 )}
                 {(scanMeta?.scenarios || []).length > 0 && (
-                  <FilterGroupB label="Scenario" counter={`${scenario.length}/${(scanMeta?.scenarios || []).length}`}>
+                  <FilterGroupB label="Scenario" counter={`${scenario.length}/${(scanMeta?.scenarios || []).length} dipilih`}
+                    action={<ChipAllRow options={scanMeta.scenarios} onChange={setScenario} />}>
                     <ChipGroupB options={scanMeta.scenarios} value={scenario} onChange={setScenario} />
                   </FilterGroupB>
                 )}
                 {!isRecoverix ? (
-                  <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length}`}>
+                  <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length} dipilih`}
+                    action={<ChipAllRow options={allTasksBatch} onChange={setTasks} />}>
                     <ChipGroupB options={allTasksBatch} value={tasks} onChange={setTasks} />
                   </FilterGroupB>
                 ) : (
@@ -429,10 +433,12 @@ function BatchPage() {
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>recoveriX: kondisi Left/Right tetap.</div>
                   </FilterGroupB>
                 )}
-                <FilterGroupB label="Subband" counter={`${subbands.length}/5`}>
+                <FilterGroupB label="Subband" counter={`${subbands.length}/${SUBBANDS_B.length} dipilih`}
+                  action={<ChipAllRow options={SUBBANDS_B} onChange={setSubbands} />}>
                   <ChipGroupB options={SUBBANDS_B} value={subbands} onChange={setSubbands} />
                 </FilterGroupB>
-                <FilterGroupB label="Channel" counter={`${channels.length}/${allChannelsBatch.length}`}>
+                <FilterGroupB label="Channel" counter={`${channels.length}/${allChannelsBatch.length} dipilih`}
+                  action={<ChipAllRow options={allChannelsBatch} onChange={setChannels} />}>
                   <div className="chip-group">
                     {chShown.map(c => {
                       const sel = channels.includes(c);
@@ -445,12 +451,18 @@ function BatchPage() {
                     )}
                   </div>
                 </FilterGroupB>
-                <FilterGroupB label="Fitur Statistik" counter={`${features.length}/6`}>
-                  <ChipGroupB options={[
+                {(() => {
+                  const featOpts = [
                     { id: 'mav', name: 'MAV' }, { id: 'variance', name: 'Variance' }, { id: 'std', name: 'STD' },
                     { id: 'band_power', name: 'Band Power' }, { id: 'relative_power', name: 'Rel. Power' }, { id: 'peak_frequency', name: 'Peak Freq' },
-                  ]} value={features} onChange={setFeatures} />
-                </FilterGroupB>
+                  ];
+                  return (
+                    <FilterGroupB label="Fitur Statistik" counter={`${features.length}/${featOpts.length} dipilih`}
+                      action={<ChipAllRow options={featOpts} onChange={setFeatures} />}>
+                      <ChipGroupB options={featOpts} value={features} onChange={setFeatures} />
+                    </FilterGroupB>
+                  );
+                })()}
                 {!isRecoverix ? (
                   <div className="form-row">
                     <label>ERD/ERS</label>
@@ -707,13 +719,26 @@ function HeroIconCircle() {
   );
 }
 
-function FilterGroupB({ label, counter, children }) {
+function ChipAllRow({ options, onChange }) {
+  const allIds = (options || []).map(o => (typeof o === 'string' ? o : o.id));
+  return (
+    <span className="row gap-8">
+      <button type="button" className="chip-mini accent" style={{ border: 'none', cursor: 'pointer' }} onClick={() => onChange(allIds)}>Pilih Semua</button>
+      <button type="button" className="chip-mini" style={{ border: 'none', cursor: 'pointer' }} onClick={() => onChange([])}>Hapus Semua</button>
+    </span>
+  );
+}
+
+function FilterGroupB({ label, counter, action, children }) {
   return (
     <div className="form-row">
       <label>
         <span>{label}</span>
-        {counter && <span className="hint">{counter}</span>}
+        {action || (counter && <span className="hint">{counter}</span>)}
       </label>
+      {action && counter && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -4, marginBottom: 4 }}>{counter}</div>
+      )}
       {children}
     </div>
   );
