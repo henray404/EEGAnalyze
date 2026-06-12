@@ -65,8 +65,8 @@ window.Api = {
   },
   // Streaming NDJSON: panggil onProgress(processed, total) tiap file selesai,
   // return payload result terakhir. Progress nyata, bukan estimasi.
-  async batchProcessStream(file, opts, onProgress) {
-    const res = await fetch(_api('/api/batch/process'), {
+  async batchProcessStream(file, opts, onProgress, path = '/api/batch/process') {
+    const res = await fetch(_api(path), {
       method: 'POST', body: _buildForm({ file, ...opts }),
     });
     if (!res.ok || !res.body) {
@@ -106,6 +106,14 @@ window.Api = {
 
     if (!result) throw new Error('Tidak ada hasil dari server');
     return result;
+  },
+
+  // ===== Batch recoveriX =====
+  batchRecoverixScan(file) {
+    return _postForm('/api/batch/recoverix/scan', { file });
+  },
+  batchRecoverixProcessStream(file, opts, onProgress) {
+    return this.batchProcessStream(file, opts, onProgress, '/api/batch/recoverix/process');
   },
 
   // ===== ML =====
