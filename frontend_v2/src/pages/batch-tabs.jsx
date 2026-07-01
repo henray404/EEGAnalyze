@@ -633,7 +633,7 @@ function RingkasanTab({ results, scanMeta }) {
 }
 
 // ===================== ENCODING TAB =====================
-function EncodingTab({ results, onDownloadEncoding }) {
+function EncodingTab({ results, onDownloadEncoding, onDownloadEncodingExcel, exporting }) {
   const enc = results?.encoding_records || [];
   const [taskF, setTaskF] = useStateBT('all');
   const [sbF, setSbF] = useStateBT('all');
@@ -689,6 +689,11 @@ function EncodingTab({ results, onDownloadEncoding }) {
         <button className="btn btn-secondary" onClick={onDownloadEncoding} disabled={enc.length === 0}>
           <Icon.Download /> CSV
         </button>
+        {onDownloadEncodingExcel && (
+          <button className="btn btn-primary" onClick={onDownloadEncodingExcel} disabled={enc.length === 0 || exporting}>
+            <Icon.Download /> {exporting ? 'Generating...' : 'Excel'}
+          </button>
+        )}
       </div>
       <div style={{ padding: '0 24px 24px' }}>
         <div className="table-wrap">

@@ -174,7 +174,15 @@ window.recordsToScenarioSheets = (records, fallbackName = 'Features') => {
 
 window.downloadCSV = (records, filename) => {
   if (!records || !records.length) return;
-  const headers = Object.keys(records[0]);
+  // Union semua key (bukan cuma records[0]) supaya record heterogen tidak
+  // kehilangan kolom yang cuma muncul di baris selain yang pertama.
+  const headers = [];
+  const seen = new Set();
+  for (const rec of records) {
+    for (const k of Object.keys(rec)) {
+      if (!seen.has(k)) { seen.add(k); headers.push(k); }
+    }
+  }
   const rows = [headers.join(',')];
   for (const rec of records) {
     rows.push(headers.map(h => {

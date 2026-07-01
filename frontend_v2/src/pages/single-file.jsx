@@ -168,6 +168,12 @@ function SingleFilePage() {
   const [erdTarget, setErdTarget] = useState('');
   const [erdIntraTrial, setErdIntraTrial] = useState(false);
   const [subbandSel, setSubbandSel] = useState(['delta', 'theta', 'alpha', 'beta']);
+  // Seleksi data untuk ekstraksi fitur (terpisah dari flagFilter yang cuma
+  // filter tampilan annotation di plot). 'task' = per nama task, 'occurrence'
+  // = per kemunculan (mis. Thinking pertama). Kosong = tidak proses apa-apa.
+  const [selectionMode, setSelectionMode] = useState('task');
+  const [selectedTasks, setSelectedTasks] = useState([]);
+  const [selectedOccs, setSelectedOccs] = useState([]);  // ["Thinking|1", ...]
   const [tab, setTab] = useState('raw');
 
   const [processing, setProcessing] = useState(false);
@@ -190,9 +196,18 @@ function SingleFilePage() {
 
   const fileInputRef = useRef(null);
 
+  // Preset mode: bandpass global mengikuti gabungan subband yang dipilih di
+  // chip "Preset Subband" (bpSubbands). Sebelumnya chip ini tak pernah dibaca
+  // sehingga preset diam-diam memakai full range 0.5-49 Hz.
+  const presetBpRange = () => {
+    const sel = SUBBANDS.filter(s => bpSubbands.includes(s.id) && s.low != null);
+    if (!sel.length) return [AppConfig.BP_DEFAULT_LOW, AppConfig.BP_DEFAULT_HIGH];
+    return [Math.min(...sel.map(s => s.low)), Math.max(...sel.map(s => s.high))];
+  };
+
   const buildProcessOpts = () => ({
-    bp_low: filterMode === 'preset' ? AppConfig.BP_DEFAULT_LOW : bpLow,
-    bp_high: filterMode === 'preset' ? AppConfig.BP_DEFAULT_HIGH : bpHigh,
+    bp_low: filterMode === 'preset' ? presetBpRange()[0] : bpLow,
+    bp_high: filterMode === 'preset' ? presetBpRange()[1] : bpHigh,
     bp_order: bpOrder,
     use_notch: notchOn,
     notch_freq: notchHz,
@@ -209,14 +224,27 @@ function SingleFilePage() {
     chunk_mode: extractMode === 'chunk',
     chunk_duration: chunkDur,
     channels_filter: selectedChannels.join(','),
-    filter_tasks: flagFilter.join(','),
+    // Seleksi data eksplisit. flagFilter TIDAK lagi dipakai di sini (itu cuma
+    // filter tampilan annotation di plot). Kosong = backend tolak (400).
+    selection_mode: selectionMode,
+    selected: (selectionMode === 'occurrence' ? selectedOccs : selectedTasks).join(','),
+    selection_active: 'true',
   });
+
+  // File tanpa task & occurrence (mis. TXT OpenBCI) diproses sebagai seluruh
+  // file -> seleksi tidak wajib, tombol tidak diblok.
+  const hasSegmentation = () =>
+    ((meta?.tasks?.length || 0) + (meta?.occurrences?.length || 0)) > 0;
+  const selectionEmpty = () =>
+    hasSegmentation() &&
+    (selectionMode === 'occurrence' ? selectedOccs : selectedTasks).length === 0;
 
   const handleUpload = async (f) => {
     if (!f) return;
     setFile(f);
     setUploading(true);
     setUploadError(null);
+    setApiError(null);
     setMeta(null);
     setDone(false);
     setResults(null);
@@ -227,8 +255,13 @@ function SingleFilePage() {
       setMeta(data);
       const chs = data.channels || [];
       setSelectedChannels(chs.slice(0, Math.min(12, chs.length)));
-      const subChs = selectedChannels.length ? selectedChannels : chs;
-      if (subChs.length > 0) setSubbandChannel(subChs[0]);
+      // Pakai chs langsung (bukan selectedChannels yang masih stale dari file
+      // sebelumnya) supaya subbandChannel selalu ada di file baru.
+      if (chs.length > 0) setSubbandChannel(chs[0]);
+      // Default seleksi = semua task & semua occurrence (perilaku lama), user
+      // bebas kurangi. Kosong nanti diblok tombol Ekstrak.
+      setSelectedTasks(data.tasks || []);
+      setSelectedOccs((data.occurrences || []).map(o => `${o.task}|${o.occurrence}`));
     } catch (e) {
       setUploadError(e.message || 'Tidak dapat terhubung ke backend. Pastikan uvicorn berjalan di port 8000.');
       setMeta(null);
@@ -355,8 +388,10 @@ function SingleFilePage() {
 
   const handleClearFile = () => {
     setFile(null); setMeta(null); setResults(null); setDone(false);
+    setApiError(null);
     setRawPlot(null); setFilteredPlot(null); setSubbandPlot(null); setIcaPlot(null);
     setSelectedChannels([]); setSubbandChannel(''); setFlagFilter([]);
+    setSelectedTasks([]); setSelectedOccs([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -544,14 +579,14 @@ function SingleFilePage() {
                     </div>
                   </>
                 )}
-                <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading}><Icon.Wave /> Plot Filtered Signal</button>
+                <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading || selectedChannels.length === 0}><Icon.Wave /> Plot Filtered Signal</button>
               </div>
 
               {/* 4b Amplitude */}
               <div className="sub-card">
                 <ToggleRow on={amplitudeOn} onChange={setAmplitudeOn} label="Amplitude Filter (clip ±100 µV)" />
                 {amplitudeOn && (
-                  <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading}><Icon.Chart /> Plot Amplitude Filter</button>
+                  <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading || selectedChannels.length === 0}><Icon.Chart /> Plot Amplitude Filter</button>
                 )}
               </div>
 
@@ -564,7 +599,7 @@ function SingleFilePage() {
                       <button className={`chip ${notchHz === '50' ? 'selected' : ''}`} onClick={() => setNotchHz('50')}>50 Hz</button>
                       <button className={`chip ${notchHz === '60' ? 'selected' : ''}`} onClick={() => setNotchHz('60')}>60 Hz</button>
                     </div>
-                    <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading}><Icon.Chart /> Plot Notch Filter</button>
+                    <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading || selectedChannels.length === 0}><Icon.Chart /> Plot Notch Filter</button>
                   </>
                 )}
               </div>
@@ -669,13 +704,99 @@ function SingleFilePage() {
               </div>
             </div>
 
+            {/* === SECTION 6: Pilih Data (Task / Occurrence) === */}
+            {meta && (
+              <div className="side-section">
+                <div className="side-title-row">
+                  <span className="eyebrow">STEP 05</span>
+                  <h3>Pilih Data yang Diproses</h3>
+                </div>
+                {!hasSegmentation() ? (
+                  <div style={{ padding: '10px 14px', background: 'var(--surface-tint)', borderRadius: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+                    File ini tidak punya annotation/task. Akan diproses sebagai <strong>seluruh file</strong> (satu segmen).
+                  </div>
+                ) : (
+                <div className="chip-group mb-12">
+                  <button className={`chip ${selectionMode === 'task' ? 'selected' : ''}`}
+                    onClick={() => setSelectionMode('task')}>Per Task</button>
+                  <button className={`chip ${selectionMode === 'occurrence' ? 'selected' : ''}`}
+                    onClick={() => setSelectionMode('occurrence')}>Per Occurrence</button>
+                </div>
+                )}
+                {hasSegmentation() && (selectionMode === 'task' ? (
+                  <>
+                    <div className="row mb-12" style={{ flexWrap: 'wrap', gap: 6 }}>
+                      <button className="btn-ghost-accent" onClick={() => setSelectedTasks([...(meta.tasks || [])])}>Pilih Semua</button>
+                      <button className="btn-ghost" onClick={() => setSelectedTasks([])}>Hapus Semua</button>
+                      <span className="spacer" />
+                      <span className="chip-mini accent">{selectedTasks.length} / {(meta.tasks || []).length}</span>
+                    </div>
+                    <div className="chip-group">
+                      {(meta.tasks || []).map(t => {
+                        const sel = selectedTasks.includes(t);
+                        return (
+                          <button key={t}
+                            className={`chip ${sel ? 'selected' : ''}`}
+                            style={{ fontSize: 11.5, padding: '5px 12px', height: 28 }}
+                            onClick={() => setSelectedTasks(sel ? selectedTasks.filter(x => x !== t) : [...selectedTasks, t])}>
+                            {t}
+                          </button>
+                        );
+                      })}
+                      {(meta.tasks || []).length === 0 && (
+                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Tidak ada task/annotation di file ini.</span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="row mb-12" style={{ flexWrap: 'wrap', gap: 6 }}>
+                      <button className="btn-ghost-accent" onClick={() => setSelectedOccs((meta.occurrences || []).map(o => `${o.task}|${o.occurrence}`))}>Pilih Semua</button>
+                      <button className="btn-ghost" onClick={() => setSelectedOccs([])}>Hapus Semua</button>
+                      <span className="spacer" />
+                      <span className="chip-mini accent">{selectedOccs.length} / {(meta.occurrences || []).length}</span>
+                    </div>
+                    <div className="chip-group" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                      {(meta.occurrences || []).map(o => {
+                        const key = `${o.task}|${o.occurrence}`;
+                        const sel = selectedOccs.includes(key);
+                        return (
+                          <button key={key}
+                            className={`chip ${sel ? 'selected' : ''}`}
+                            style={{ fontSize: 11.5, padding: '5px 12px', height: 28 }}
+                            title={`onset ${o.onset?.toFixed?.(2)}s`}
+                            onClick={() => setSelectedOccs(sel ? selectedOccs.filter(x => x !== key) : [...selectedOccs, key])}>
+                            {o.label || key}
+                          </button>
+                        );
+                      })}
+                      {(meta.occurrences || []).length === 0 && (
+                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Tidak ada occurrence (file tanpa annotation).</span>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                      Mode occurrence pakai Full Data (chunk belum didukung di sini).
+                    </div>
+                  </>
+                ))}
+              </div>
+            )}
+
             <div className="card-divider" />
 
-            <button className="btn-cta" onClick={handleProcess} disabled={!file || processing}>
+            <button className="btn-cta" onClick={handleProcess}
+              disabled={!file || processing || selectedChannels.length === 0 || features.length === 0 || selectionEmpty()}>
               <Icon.Play />
               {processing ? 'Memproses...' : 'Ekstrak Fitur'}
               <Icon.Arrow />
             </button>
+            {file && !processing && (selectedChannels.length === 0 || features.length === 0 || selectionEmpty()) && (
+              <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--danger)' }}>
+                {selectedChannels.length === 0 ? 'Pilih minimal 1 channel. ' : ''}
+                {features.length === 0 ? 'Pilih minimal 1 fitur. ' : ''}
+                {selectionEmpty() ? (selectionMode === 'occurrence' ? 'Pilih minimal 1 occurrence.' : 'Pilih minimal 1 task.') : ''}
+              </div>
+            )}
 
             {processing && (
               <>

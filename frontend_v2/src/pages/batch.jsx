@@ -261,6 +261,23 @@ function BatchPage() {
     window.downloadCSV(results.encoding_records, `batch_encoding_${Date.now()}.csv`);
   };
 
+  const handleExportEncodingExcel = async () => {
+    if (!results?.encoding_records?.length || exporting) return;
+    setExporting(true);
+    setApiError(null);
+    const fname = `batch_encoding_${Date.now()}.xlsx`;
+    try {
+      const blob = await Api.exportExcel(
+        window.recordsToScenarioSheets(results.encoding_records, 'Encoding'), fname,
+      );
+      window.downloadBlob(blob, fname);
+    } catch (e) {
+      setApiError(e.message || 'Export Excel gagal');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleExportExcelBatch = async () => {
     if (!results || !results.records || results.records.length === 0) return;
     if (exporting) return;
@@ -688,7 +705,7 @@ function BatchPage() {
                 {tab === 'tabel'    && <TabelTab results={results} subbands={subbands} />}
                 {tab === 'heatmap'  && <HeatmapTab results={results} subbands={subbands} channels={channels} />}
                 {tab === 'scatter'  && <ScatterTab results={results} />}
-                {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} />}
+                {tab === 'encoding' && <EncodingTab results={results} onDownloadEncoding={handleDownloadEncodingCSV} onDownloadEncodingExcel={handleExportEncodingExcel} exporting={exporting} />}
                 {tab === 'erd'          && <BatchErdTab results={results} baseline={erdBaseline} target={erdTarget} />}
                 {tab === 'chunk-compare' && <ChunkCompareTab results={results} />}
                 {tab === 'data'         && <DataTableTab results={results} subbands={subbands} onDownloadExcel={handleExportExcelBatch} exporting={exporting} />}

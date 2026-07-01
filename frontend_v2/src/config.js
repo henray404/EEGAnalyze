@@ -5,14 +5,14 @@ window.AppConfig = {
   API_BASE: 'http://localhost:8000',
 
   SUBBANDS: [
-    { id: 'delta',     name: 'Delta',     range: '0.5-4 Hz' },
-    { id: 'theta',     name: 'Theta',     range: '4-8 Hz' },
-    { id: 'mu',        name: 'Mu',        range: '8-12 Hz' },
-    { id: 'alpha',     name: 'Alpha',     range: '8-13 Hz' },
-    { id: 'low_beta',  name: 'Low Beta',  range: '12-16 Hz' },
-    { id: 'beta',      name: 'Beta',      range: '13-30 Hz' },
-    { id: 'high_beta', name: 'High Beta', range: '20-30 Hz' },
-    { id: 'gamma',     name: 'Gamma',     range: '30-49 Hz' },
+    { id: 'delta',     name: 'Delta',     range: '0.5-4 Hz',  low: 0.5, high: 4 },
+    { id: 'theta',     name: 'Theta',     range: '4-8 Hz',    low: 4,   high: 8 },
+    { id: 'mu',        name: 'Mu',        range: '8-12 Hz',   low: 8,   high: 12 },
+    { id: 'alpha',     name: 'Alpha',     range: '8-13 Hz',   low: 8,   high: 13 },
+    { id: 'low_beta',  name: 'Low Beta',  range: '12-16 Hz',  low: 12,  high: 16 },
+    { id: 'beta',      name: 'Beta',      range: '13-30 Hz',  low: 13,  high: 30 },
+    { id: 'high_beta', name: 'High Beta', range: '20-30 Hz',  low: 20,  high: 30 },
+    { id: 'gamma',     name: 'Gamma',     range: '30-49 Hz',  low: 30,  high: 49 },
   ],
   DEFAULT_SUBBANDS: ['delta', 'theta', 'alpha', 'beta', 'gamma'],
 
