@@ -37,14 +37,14 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, sosfiltfilt
 
 from app.config import (
     DEFAULT_SUBBANDS, DEFAULT_ENCODING_WINDOW,
     EEGET_ALS_SCENARIOS,
 )
-from app.processing.features import EEGFeatures
 from app.processing.loader import EEGLoader
+from app.processing.psd import PSDAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,10 @@ DEFAULT_CHUNK_FEATURES = [
 TIME_DOMAIN_FEATURES = {"mav", "variance", "std"}
 FREQ_DOMAIN_FEATURES = {"band_power", "relative_power", "peak_frequency"}
 
-_MIN_CHUNK_SAMPLES = 4
+# Floor sampel per chunk. Harus > padlen sosfiltfilt (3*(2*len(sos)+1) ~= 33
+# untuk order 5) DAN >= window minimum PSD Welch. 64 beri margin aman supaya
+# tiap chunk yang lolos tidak di-nol-kan guard _bandpass_array maupun crash.
+_MIN_CHUNK_SAMPLES = 64
 
 
 # ------------------------------------------------------------------ #
@@ -72,23 +75,35 @@ _MIN_CHUNK_SAMPLES = 4
 # ------------------------------------------------------------------ #
 
 @lru_cache(maxsize=256)
-def _butter_coeffs(sfreq, low, high, order=5):
-    """Koefisien butterworth bandpass (cached per sfreq/low/high/order).
+def _butter_sos(sfreq, low, high, order=5):
+    """SOS koefisien butterworth bandpass (cached per sfreq/low/high/order).
 
-    Koefisien hanya bergantung pada parameter ini, bukan pada data, jadi
-    dihitung sekali lalu dipakai ulang untuk semua chunk/channel. Hasil
-    numerik identik dengan menghitung ulang tiap kali.
+    Pakai second-order sections. Bentuk transfer function (b, a) order tinggi
+    tidak stabil numerik untuk subband frekuensi rendah (mis. Delta 0.5-4 Hz)
+    dan menghasilkan NaN via filtfilt. SOS jauh lebih stabil. Konsisten dengan
+    ``features._bandpass_array`` (fix commit 1cfbce5). Koefisien hanya
+    bergantung parameter ini, bukan data, jadi di-cache dan dipakai ulang.
     """
     nyq = 0.5 * sfreq
     low_n = max(low / nyq, 0.001)
     high_n = min(high / nyq, 0.999)
-    return butter(order, [low_n, high_n], btype="band")
+    return butter(order, [low_n, high_n], btype="band", output="sos")
 
 
 def _bandpass_array(data, sfreq, low, high, order=5):
-    """Bandpass filter pada array numpy 1-D (per-subband, single pass)."""
-    b, a = _butter_coeffs(sfreq, low, high, order)
-    return filtfilt(b, a, data)
+    """Bandpass filter pada array numpy 1-D (per-subband, single pass).
+
+    SOS + sosfiltfilt + guard panjang minimum. Kalau data lebih pendek dari
+    padlen sosfiltfilt, kembalikan nol agar tidak melempar ValueError (chunk
+    sependek itu sudah dicegah _MIN_CHUNK_SAMPLES; ini jaring pengaman akhir).
+    """
+    sos = _butter_sos(sfreq, low, high, order)
+    # sosfiltfilt crash kalau len(data) <= padlen; padlen default = min_len.
+    # Pakai <= supaya len == padlen ikut dijaring (bukan cuma < ).
+    min_len = 3 * (2 * len(sos) + 1)
+    if len(data) <= min_len:
+        return np.zeros_like(data)
+    return sosfiltfilt(sos, data)
 
 
 # Ambang minimal unit kerja sebelum parallelisasi proses dipakai. Di bawah
@@ -105,16 +120,44 @@ def _chunk_unit_rows(args):
     task, ch, signal, sfreq, chunk_samples, subband_items, features = args
     rows = []
     n_chunks = len(signal) // chunk_samples
+    subbands_dict = dict(subband_items)
+    want_freq = bool(FREQ_DOMAIN_FEATURES & set(features))
+    want_time = bool(TIME_DOMAIN_FEATURES & set(features))
     for ci in range(n_chunks):
         start = ci * chunk_samples
         chunk_signal = signal[start:start + chunk_samples]
+
+        # Fitur frekuensi: satu PSD Welch per chunk dari sinyal MENTAH
+        # (bukan per-subband filtered), lalu band_power/relative_power/
+        # peak_frequency per subband. relative_power jadi porsi power
+        # sebenarnya karena pembaginya total power seluruh spektrum, bukan
+        # band itu sendiri (bug lama: sinyal sudah dibandpass duluan).
+        freq_map = {}
+        if want_freq:
+            psds, freqs = PSDAnalyzer.compute_psd_array(
+                chunk_signal, sfreq, method="welch",
+                fmin=0.0, fmax=sfreq / 2.0,
+            )
+            bp_df = PSDAnalyzer.compute_band_power_from_psd(
+                psds, freqs, ["_"], subbands_dict,
+            )
+            for _, r in bp_df.iterrows():
+                freq_map[r["subband"]] = r
+
         for sb_name, (low, high) in subband_items:
-            filtered = _bandpass_array(chunk_signal, sfreq, low, high)
             row = {"chunk": ci, "channel": ch, "subband": sb_name}
             if task is not None:
                 row = {"task": task, **row}
+            filtered = (_bandpass_array(chunk_signal, sfreq, low, high)
+                        if want_time else None)
+            fm = freq_map.get(sb_name)
             for feat in features:
-                row[feat] = _compute_feature(feat, filtered, sfreq, low, high)
+                if feat in TIME_DOMAIN_FEATURES:
+                    row[feat] = _compute_time_feature(feat, filtered)
+                elif feat in FREQ_DOMAIN_FEATURES:
+                    row[feat] = float(fm[feat]) if fm is not None else 0.0
+                else:
+                    row[feat] = 0.0
             rows.append(row)
     return rows
 
@@ -145,20 +188,19 @@ def _run_chunk_units(units, parallel, max_workers):
     return rows
 
 
-def _compute_feature(feat, filtered, sfreq, low, high):
-    """Hitung satu fitur dari sinyal yang sudah di-bandpass ke subband."""
+def _compute_time_feature(feat, filtered):
+    """Hitung satu fitur time-domain dari sinyal yang sudah di-bandpass.
+
+    Fitur frequency-domain (band_power, relative_power, peak_frequency)
+    TIDAK lagi dihitung di sini; dihitung sekali per chunk via Welch PSD
+    di ``_chunk_unit_rows``.
+    """
     if feat == "mav":
         return float(np.mean(np.abs(filtered)))
     if feat == "variance":
         return float(np.var(filtered))
     if feat == "std":
         return float(np.std(filtered))
-    if feat == "band_power":
-        return EEGFeatures.compute_band_power(filtered, sfreq, low, high)
-    if feat == "relative_power":
-        return EEGFeatures.compute_relative_power(filtered, sfreq, low, high)
-    if feat == "peak_frequency":
-        return EEGFeatures.compute_peak_frequency(filtered, sfreq, low, high)
     return 0.0
 
 

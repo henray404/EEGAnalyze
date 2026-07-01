@@ -265,7 +265,7 @@ def _slice_times(loader: EEGLoader, t_start: float, t_dur: float, channels: list
 # ============================================================== #
 
 @router.post("/upload")
-async def upload_single_file(file: UploadFile = File(...)):
+def upload_single_file(file: UploadFile = File(...)):
     loader = EEGLoader()
     try:
         info = _load_uploaded_file(loader, file)
@@ -277,6 +277,10 @@ async def upload_single_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Gagal load file: {e}")
 
     info["tasks"] = loader.get_task_list()
+    info["occurrences"] = [
+        {**o, "label": f'{o["task"]} #{o["occurrence"]}'}
+        for o in loader.get_task_occurrences()
+    ]
     info["filename"] = file.filename
     if _is_edf(file.filename or ""):
         info["format"] = "EDF"
@@ -292,7 +296,7 @@ async def upload_single_file(file: UploadFile = File(...)):
 # ============================================================== #
 
 @router.post("/process")
-async def process_single_file(
+def process_single_file(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),
@@ -314,6 +318,9 @@ async def process_single_file(
     chunk_duration: float = Form(0.5),
     channels_filter: str = Form(""),
     filter_tasks: str = Form(""),
+    selection_mode: str = Form("task"),
+    selected: str = Form(""),
+    selection_active: str = Form("false"),
 ):
     loader = EEGLoader()
     try:
@@ -328,10 +335,41 @@ async def process_single_file(
         )
 
         df = loader.extract_dataframe()
-        tasks = loader.get_task_list()
-        tasks_filter = _parse_csv_list(filter_tasks)
-        if tasks_filter:
-            tasks = [t for t in tasks if t in tasks_filter] or tasks
+        all_tasks = loader.get_task_list()
+
+        sel_active = _to_bool(selection_active)
+        sel_mode = (selection_mode or "task").strip().lower()
+        sel_items = _parse_csv_list(selected)
+        # File tanpa annotation sama sekali (mis. TXT OpenBCI, EDF tanpa marker)
+        # -> tidak ada yang bisa dipilih; diproses sebagai seluruh file.
+        whole_file = not all_tasks
+        # Seleksi eksplisit: kosong = proses nothing (bukan fallback ke semua).
+        # Hanya wajib kalau memang ADA task untuk dipilih.
+        if sel_active and not sel_items and not whole_file:
+            raise HTTPException(
+                status_code=400,
+                detail="Pilih minimal 1 task/occurrence untuk diproses.",
+            )
+
+        if whole_file:
+            tasks = []  # tidak ada task; dihandle branch whole-file di bawah
+        elif sel_mode == "occurrence":
+            tasks = all_tasks  # path occurrence filter sendiri via selected_occ
+        elif sel_active:
+            tasks = [t for t in all_tasks if t in sel_items]
+            if not tasks:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Task terpilih tidak ditemukan di file.",
+                )
+        else:
+            # Kompat lama: filter_tasks (kosong = semua task).
+            tasks_filter = _parse_csv_list(filter_tasks)
+            tasks = (
+                [t for t in all_tasks if t in tasks_filter]
+                if tasks_filter else all_tasks
+            )
+
         all_channels = loader.channel_names
         ch_filter = _parse_csv_list(channels_filter)
         channels = [c for c in all_channels if not ch_filter or c in ch_filter]
@@ -341,7 +379,57 @@ async def process_single_file(
         selected_subbands = _resolve_subbands(subbands)
         selected_features = _resolve_features(features)
 
-        if _to_bool(chunk_mode):
+        if whole_file:
+            # Tidak ada task/annotation: proses seluruh sinyal sebagai 1 segmen.
+            if _to_bool(chunk_mode):
+                feat_df = ChunkingPipeline.compute_chunked_subband_features(
+                    df, channels, loader.sfreq,
+                    chunk_duration=chunk_duration,
+                    subbands=selected_subbands,
+                    features=selected_features,
+                    parallel=True,
+                )
+                mode = "chunk"
+            else:
+                feat_df = EEGFeatures.compute_subband_features(
+                    df, channels, loader.sfreq,
+                    selected_subbands, selected_features,
+                    include_frequency=_to_bool(include_frequency),
+                    psd_method=psd_method, psd_fmin=psd_fmin, psd_fmax=psd_fmax,
+                )
+                mode = "full"
+            if not feat_df.empty:
+                feat_df.insert(0, "task", "(seluruh file)")
+        elif sel_mode == "occurrence":
+            # Full-data per occurrence (chunk belum didukung untuk occurrence).
+            selected_occ = set()
+            occ_tasks = set()
+            for item in sel_items:
+                if "|" not in item:
+                    continue
+                t, o = item.rsplit("|", 1)
+                try:
+                    selected_occ.add((t, int(o)))
+                    occ_tasks.add(t)
+                except ValueError:
+                    continue
+            if not selected_occ:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Format occurrence tidak valid (harus 'task|nomor').",
+                )
+            feat_df = EEGFeatures.compute_occurrence_features(
+                loader, df, channels, list(occ_tasks),
+                subbands=selected_subbands,
+                features=selected_features,
+                include_frequency=_to_bool(include_frequency),
+                psd_method=psd_method,
+                psd_fmin=psd_fmin,
+                psd_fmax=psd_fmax,
+                selected_occ=selected_occ,
+            )
+            mode = "occurrence"
+        elif _to_bool(chunk_mode):
             feat_df = ChunkingPipeline.compute_task_chunked_features(
                 loader, df, channels, tasks,
                 chunk_duration=chunk_duration,
@@ -384,7 +472,7 @@ async def process_single_file(
 # ============================================================== #
 
 @router.post("/erd")
-async def compute_erd_single(
+def compute_erd_single(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),
@@ -429,7 +517,8 @@ async def compute_erd_single(
         selected_subbands = _resolve_subbands(subbands)
 
         if is_intra_trial:
-            if not loader.cue_offset_s:
+            # cue_offset_s bisa 0.0 valid (trigger di sampel 0); cek None.
+            if loader.cue_offset_s is None:
                 raise HTTPException(
                     status_code=400,
                     detail="Mode intra-trial cuma berlaku untuk file recoveriX (.zip).",
@@ -476,7 +565,7 @@ async def compute_erd_single(
 # ============================================================== #
 
 @router.post("/plot/raw")
-async def plot_raw(
+def plot_raw(
     file: UploadFile = File(...),
     channels: str = Form(""),
     t_start: float = Form(0.0),
@@ -504,7 +593,7 @@ async def plot_raw(
 # ============================================================== #
 
 @router.post("/plot/filtered")
-async def plot_filtered(
+def plot_filtered(
     file: UploadFile = File(...),
     channels: str = Form(""),
     t_start: float = Form(0.0),
@@ -551,7 +640,7 @@ async def plot_filtered(
 # ============================================================== #
 
 @router.post("/plot/subband")
-async def plot_subband(
+def plot_subband(
     file: UploadFile = File(...),
     channel: str = Form(...),
     t_start: float = Form(0.0),
@@ -691,7 +780,7 @@ async def plot_subband(
 # ============================================================== #
 
 @router.post("/plot/ica")
-async def plot_ica(
+def plot_ica(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),

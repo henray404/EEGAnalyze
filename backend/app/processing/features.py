@@ -266,7 +266,8 @@ class EEGFeatures:
                                      subbands=None, features=None,
                                      include_frequency=True,
                                      psd_method="welch", psd_fmin=0.0,
-                                     psd_fmax=49.0, psd_n_fft=None):
+                                     psd_fmax=49.0, psd_n_fft=None,
+                                     selected_occ=None):
         """Hitung fitur per occurrence per task per channel per subband.
 
         Setiap occurrence diberi label task_occ (misal 'Resting_1').
@@ -277,6 +278,10 @@ class EEGFeatures:
         df : pd.DataFrame
         channels, tasks, subbands, features, include_frequency: sama.
         psd_method, psd_fmin, psd_fmax, psd_n_fft : parameter PSD.
+        selected_occ : set[tuple[str, int]] | None
+            Kalau diberi, hanya proses occurrence (task, occ_num) yang ada di
+            set ini (mis. {("Thinking", 1)}). None = semua occurrence dari task
+            yang lolos filter ``tasks``.
 
         Returns
         -------
@@ -292,6 +297,8 @@ class EEGFeatures:
             occ_num = occ["occurrence"]
 
             if task_name not in tasks:
+                continue
+            if selected_occ is not None and (task_name, occ_num) not in selected_occ:
                 continue
 
             seg = loader.extract_occurrence_segment(df, task_name, occ_num)
@@ -600,7 +607,8 @@ class EEGFeatures:
         """
         if subbands is None:
             subbands = DEFAULT_SUBBANDS
-        if not cue_offset_s:
+        # cue_offset_s bisa 0.0 valid (trigger_pos == 0); cek None, bukan falsy.
+        if cue_offset_s is None:
             return pd.DataFrame()
 
         occurrences = loader.get_task_occurrences()

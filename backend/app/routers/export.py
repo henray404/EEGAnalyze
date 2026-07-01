@@ -35,7 +35,16 @@ def _write_sheet(ws, records: list[dict]):
         ws.cell(1, 1, "Tidak ada data").font = Font(italic=True)
         return
 
-    headers = list(records[0].keys())
+    # Union semua key (urutan: kemunculan pertama), bukan cuma records[0].
+    # Kalau record heterogen (mis. sebagian punya kolom 'chunk'), pakai row0
+    # saja bakal diam-diam buang kolom yang cuma ada di baris lain.
+    headers = []
+    seen = set()
+    for rec in records:
+        for k in rec.keys():
+            if k not in seen:
+                seen.add(k)
+                headers.append(k)
     col_widths = {h: max(len(str(h)), 8) for h in headers}
 
     for ci, h in enumerate(headers, 1):

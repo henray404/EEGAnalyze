@@ -92,7 +92,9 @@ class StatisticalTests:
             grp_data = df.loc[idx, feature_cols]
             if method == "zscore":
                 mu = grp_data.mean()
-                sigma = grp_data.std().replace(0, 1)
+                # std() ddof=1 pada grup 1-baris = NaN (bukan 0). fillna(1)
+                # dulu supaya subjek dengan satu record tidak jadi semua NaN.
+                sigma = grp_data.std().fillna(1).replace(0, 1)
                 df.loc[idx, feature_cols] = (grp_data - mu) / sigma
             elif method == "minmax":
                 mn = grp_data.min()

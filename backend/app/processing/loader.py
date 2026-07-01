@@ -43,6 +43,16 @@ class EEGLoader:
                 pass
             self._tmp_path = None
 
+    def __del__(self):
+        # ponytail: bersihkan tempfile saat loader di-GC. Tiap request bikin
+        # loader lokal baru, jadi GC di akhir handler = cleanup. Bukan
+        # deterministik; kalau butuh jaminan langsung, pakai try/finally +
+        # _cleanup_tmp() eksplisit di router atau jadikan context manager.
+        try:
+            self._cleanup_tmp()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ #
     #  Loading                                                            #
     # ------------------------------------------------------------------ #
@@ -243,26 +253,30 @@ class EEGLoader:
         -------
         pd.DataFrame  Subset data untuk occurrence tersebut.
         """
-        task_df = df[df["marker"] == task_name].copy()
-        if task_df.empty:
+        # Batas segment diambil dari onset/duration occurrence itu sendiri
+        # (via get_task_occurrences), BUKAN dari gap index kolom marker.
+        # Heuristik gap index menyatukan dua occurrence task sama yang
+        # berdampingan (tanpa marker lain di antaranya) jadi satu segment,
+        # sehingga occurrence_num menunjuk data yang salah. Onset/duration
+        # konsisten dengan penomoran get_task_occurrences.
+        if "time" not in df.columns:
             return pd.DataFrame()
 
-        # Cari batas-batas segments berdasarkan gap di index
-        indices = task_df.index.tolist()
-        segments = []
-        seg_start = indices[0]
-
-        for i in range(1, len(indices)):
-            if indices[i] - indices[i - 1] > 1:
-                segments.append((seg_start, indices[i - 1]))
-                seg_start = indices[i]
-        segments.append((seg_start, indices[-1]))
-
-        if occurrence_num < 1 or occurrence_num > len(segments):
+        task_occs = [
+            o for o in self.get_task_occurrences() if o["task"] == task_name
+        ]
+        if occurrence_num < 1 or occurrence_num > len(task_occs):
             return pd.DataFrame()
 
-        start_idx, end_idx = segments[occurrence_num - 1]
-        return df.loc[start_idx:end_idx].copy()
+        occ = task_occs[occurrence_num - 1]
+        onset = occ["onset"]
+        dur = occ["duration"]
+        if dur > 0:
+            mask = (df["time"] >= onset) & (df["time"] < onset + dur)
+        else:
+            idx = (df["time"] - onset).abs().idxmin()
+            mask = df.index == idx
+        return df[mask].copy()
 
     def get_occurrence_pairs(self, task_a, task_b):
         """Temukan pasangan sequential occurrence dari dua task.
@@ -289,7 +303,7 @@ class EEGLoader:
             if curr["task"] == task_a and nxt["task"] == task_b:
                 pairs.append((curr["occurrence"], nxt["occurrence"]))
             elif curr["task"] == task_b and nxt["task"] == task_a:
-                pairs.append((nxt["occurrence"], nxt["occurrence"]))
+                pairs.append((nxt["occurrence"], curr["occurrence"]))
 
         # Deduplicate
         seen = set()
