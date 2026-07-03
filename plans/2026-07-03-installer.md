@@ -449,29 +449,42 @@ Append to `tests/test_install.py`:
 ```python
 import os
 import stat
+import sys
 
 
 def test_write_start_scripts_creates_both_files(tmp_path):
     install.write_start_scripts(tmp_path)
     bat = tmp_path / "start.bat"
     sh = tmp_path / "start.sh"
-    assert bat.read_text() == install.start_bat_content()
-    assert sh.read_text() == install.start_sh_content()
+    # Compare raw bytes, not text-mode read: start_bat_content() embeds
+    # literal \r\n and text-mode read_text() would normalize newlines on
+    # the way in, masking a write-side CRLF corruption bug.
+    assert bat.read_bytes().decode("utf-8") == install.start_bat_content()
+    assert sh.read_bytes().decode("utf-8") == install.start_sh_content()
 
 
 def test_write_start_scripts_makes_sh_executable(tmp_path):
     install.write_start_scripts(tmp_path)
     sh = tmp_path / "start.sh"
-    mode = os.stat(sh).st_mode
-    assert mode & stat.S_IXUSR
+    if sys.platform == "win32":
+        # Windows has no POSIX exec-bit concept for arbitrary extensions;
+        # os.chmod's S_IEXEC is a documented no-op here. Just confirm the
+        # file exists and chmod didn't raise.
+        assert sh.exists()
+    else:
+        mode = os.stat(sh).st_mode
+        assert mode & stat.S_IXUSR
 
 
 def test_create_mac_launcher(tmp_path):
     launcher = install.create_mac_launcher(tmp_path)
     assert launcher == tmp_path / "EEG Analysis Tool.command"
-    assert launcher.read_text() == install.command_launcher_content(tmp_path)
-    mode = os.stat(launcher).st_mode
-    assert mode & stat.S_IXUSR
+    assert launcher.read_bytes().decode("utf-8") == install.command_launcher_content(tmp_path)
+    if sys.platform == "win32":
+        assert launcher.exists()
+    else:
+        mode = os.stat(launcher).st_mode
+        assert mode & stat.S_IXUSR
 
 
 def test_create_linux_desktop_entry_writes_to_applications_dir(tmp_path, monkeypatch):
@@ -482,7 +495,7 @@ def test_create_linux_desktop_entry_writes_to_applications_dir(tmp_path, monkeyp
     created = install.create_linux_desktop_entry(dest)
     apps_entry = fake_home / ".local" / "share" / "applications" / "eeg-analysis-tool.desktop"
     assert apps_entry in created
-    assert apps_entry.read_text() == install.desktop_entry_content(dest)
+    assert apps_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
 
 
 def test_create_linux_desktop_entry_also_copies_to_desktop_if_present(tmp_path, monkeypatch):
@@ -494,7 +507,7 @@ def test_create_linux_desktop_entry_also_copies_to_desktop_if_present(tmp_path, 
     created = install.create_linux_desktop_entry(dest)
     desktop_entry = fake_home / "Desktop" / "eeg-analysis-tool.desktop"
     assert desktop_entry in created
-    assert desktop_entry.read_text() == install.desktop_entry_content(dest)
+    assert desktop_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
 
 
 def test_create_linux_desktop_entry_skips_desktop_copy_if_no_desktop_dir(tmp_path, monkeypatch):
@@ -526,10 +539,14 @@ def _make_executable(path: Path) -> None:
 
 
 def write_start_scripts(dest: Path) -> None:
+    # write_bytes (not write_text): start_bat_content()/start_sh_content()
+    # embed explicit line endings (\r\n / \n). Path.write_text() applies
+    # its own newline translation on top of that and corrupts \r\n into
+    # \r\r\n on Windows. Writing raw bytes preserves them exactly.
     bat_path = dest / "start.bat"
     sh_path = dest / "start.sh"
-    bat_path.write_text(start_bat_content(), encoding="utf-8")
-    sh_path.write_text(start_sh_content(), encoding="utf-8")
+    bat_path.write_bytes(start_bat_content().encode("utf-8"))
+    sh_path.write_bytes(start_sh_content().encode("utf-8"))
     _make_executable(sh_path)
 
 
@@ -566,23 +583,24 @@ def create_windows_shortcuts(dest: Path) -> list[Path]:
 
 def create_mac_launcher(dest: Path) -> Path:
     launcher_path = dest / "EEG Analysis Tool.command"
-    launcher_path.write_text(command_launcher_content(dest), encoding="utf-8")
+    launcher_path.write_bytes(command_launcher_content(dest).encode("utf-8"))
     _make_executable(launcher_path)
     return launcher_path
 
 
 def create_linux_desktop_entry(dest: Path) -> list[Path]:
     content = desktop_entry_content(dest)
+    content_bytes = content.encode("utf-8")
     apps_dir = Path.home() / ".local" / "share" / "applications"
     apps_dir.mkdir(parents=True, exist_ok=True)
     entry_path = apps_dir / "eeg-analysis-tool.desktop"
-    entry_path.write_text(content, encoding="utf-8")
+    entry_path.write_bytes(content_bytes)
     _make_executable(entry_path)
     created = [entry_path]
     desktop_dir = Path.home() / "Desktop"
     if desktop_dir.exists():
         desktop_copy = desktop_dir / "eeg-analysis-tool.desktop"
-        desktop_copy.write_text(content, encoding="utf-8")
+        desktop_copy.write_bytes(content_bytes)
         _make_executable(desktop_copy)
         created.append(desktop_copy)
     return created
