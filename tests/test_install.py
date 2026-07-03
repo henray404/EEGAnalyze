@@ -27,35 +27,6 @@ def test_default_destination_is_under_home():
     assert dest == Path.home() / "EEGAnalyze"
 
 
-def test_venv_dir():
-    dest = Path("/tmp/myproject")
-    assert install.venv_dir(dest) == dest / "backend" / ".venv"
-
-
-def test_venv_python_windows(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Windows")
-    dest = Path("/tmp/myproject")
-    assert install.venv_python(dest) == dest / "backend" / ".venv" / "Scripts" / "python.exe"
-
-
-def test_venv_python_mac(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    dest = Path("/tmp/myproject")
-    assert install.venv_python(dest) == dest / "backend" / ".venv" / "bin" / "python"
-
-
-def test_venv_pip_windows(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Windows")
-    dest = Path("/tmp/myproject")
-    assert install.venv_pip(dest) == dest / "backend" / ".venv" / "Scripts" / "pip.exe"
-
-
-def test_venv_pip_linux(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Linux")
-    dest = Path("/tmp/myproject")
-    assert install.venv_pip(dest) == dest / "backend" / ".venv" / "bin" / "pip"
-
-
 def test_check_git_found(monkeypatch):
     monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/git")
     assert install.check_git() is True
@@ -101,23 +72,6 @@ def test_destination_is_safe_nonempty_dir(tmp_path):
     assert install.destination_is_safe(dest) is False
 
 
-def test_start_bat_content_launches_both_servers_and_browser():
-    content = install.start_bat_content()
-    assert "backend\\.venv\\Scripts\\python.exe" in content
-    assert "-m uvicorn app.main:app --app-dir backend --port 8000" in content
-    assert "-m http.server 5173 --directory frontend_v2" in content
-    assert "start http://localhost:5173" in content
-
-
-def test_start_sh_content_launches_both_servers_and_browser():
-    content = install.start_sh_content()
-    assert "backend/.venv/bin/python" in content
-    assert "-m uvicorn app.main:app --app-dir backend --port 8000" in content
-    assert "-m http.server 5173 --directory frontend_v2" in content
-    assert "http://localhost:5173" in content
-    assert content.startswith("#!/bin/bash\n")
-
-
 def test_desktop_entry_content(tmp_path):
     dest = tmp_path / "EEGAnalyze"
     content = install.desktop_entry_content(dest)
@@ -145,20 +99,10 @@ def test_windows_shortcut_vbscript(tmp_path):
     assert "oLink.Save" in content
 
 
-def test_write_start_scripts_creates_both_files(tmp_path):
-    install.write_start_scripts(tmp_path)
-    bat = tmp_path / "start.bat"
+def test_ensure_start_sh_executable_when_present(tmp_path):
     sh = tmp_path / "start.sh"
-    # Compare raw bytes, not text-mode read: start_bat_content() embeds
-    # literal \r\n and text-mode read_text() would normalize newlines on
-    # the way in, masking a write-side CRLF corruption bug.
-    assert bat.read_bytes().decode("utf-8") == install.start_bat_content()
-    assert sh.read_bytes().decode("utf-8") == install.start_sh_content()
-
-
-def test_write_start_scripts_makes_sh_executable(tmp_path):
-    install.write_start_scripts(tmp_path)
-    sh = tmp_path / "start.sh"
+    sh.write_bytes(b"#!/bin/bash\n")
+    install.ensure_start_sh_executable(tmp_path)
     if sys.platform == "win32":
         # Windows has no POSIX exec-bit concept for arbitrary extensions;
         # os.chmod's S_IEXEC is a documented no-op here. Just confirm the
@@ -167,6 +111,11 @@ def test_write_start_scripts_makes_sh_executable(tmp_path):
     else:
         mode = os.stat(sh).st_mode
         assert mode & stat.S_IXUSR
+
+
+def test_ensure_start_sh_executable_noop_when_missing(tmp_path):
+    # Shouldn't raise if start.sh isn't there yet (e.g. clone failed).
+    install.ensure_start_sh_executable(tmp_path)
 
 
 def test_create_mac_launcher(tmp_path):
@@ -234,21 +183,6 @@ def test_is_existing_clone_true_when_git_dir_present(tmp_path):
     assert install.is_existing_clone(tmp_path) is True
 
 
-def test_venv_command():
-    dest = Path("/tmp/EEGAnalyze")
-    cmd = install.venv_command(dest)
-    assert cmd == [sys.executable, "-m", "venv", str(install.venv_dir(dest))]
-
-
-def test_pip_install_command():
-    dest = Path("/tmp/EEGAnalyze")
-    cmd = install.pip_install_command(dest)
-    assert cmd == [
-        str(install.venv_pip(dest)), "install", "-r",
-        str(dest / "backend" / "requirements.txt"),
-    ]
-
-
 def test_run_command_streaming_captures_output_and_exit_code():
     lines = []
     code = install.run_command_streaming(
@@ -271,28 +205,14 @@ def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
 
     def fake_run(cmd, on_line):
         calls.append(cmd)
-        return 1  # simulate failure on every call
+        return 1  # simulate failure
 
     monkeypatch.setattr(install, "run_command_streaming", fake_run)
     lines = []
     result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
     assert result is False
-    assert len(calls) == 1  # only clone attempted; venv/pip never ran
+    assert len(calls) == 1
     assert any("FAILED" in line for line in lines)
-
-
-def test_run_setup_stops_after_venv_failure(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(cmd, on_line):
-        calls.append(cmd)
-        return 0 if len(calls) == 1 else 1  # clone succeeds, venv fails
-
-    monkeypatch.setattr(install, "run_command_streaming", fake_run)
-    lines = []
-    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
-    assert result is False
-    assert len(calls) == 2  # clone + venv attempted; pip never ran
 
 
 def test_run_setup_all_succeed(monkeypatch, tmp_path):
@@ -306,7 +226,7 @@ def test_run_setup_all_succeed(monkeypatch, tmp_path):
     lines = []
     result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
     assert result is True
-    assert len(calls) == 3
+    assert len(calls) == 1  # clone only - venv/pip is launcher.py's job now
     assert any("complete" in line.lower() for line in lines)
 
 
