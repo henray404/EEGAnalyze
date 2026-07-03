@@ -24,7 +24,7 @@ logging.info("=" * 50)
 logging.info("Launcher started")
 
 # --- KONFIGURASI ---
-LOCAL_VERSION = "2.0"
+LOCAL_VERSION = "2.1"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(APP_DIR, "backend")
 FRONTEND_DIR = os.path.join(APP_DIR, "frontend_v2")
