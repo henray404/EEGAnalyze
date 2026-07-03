@@ -40,14 +40,14 @@ window.Api = {
   singleProcess(file, opts) {
     return _postForm('/api/single/process', { file, ...opts });
   },
-  singlePlotRaw(file, channels, t_start, t_dur, annotation_filter) {
-    return _postForm('/api/single/plot/raw', { file, channels, t_start, t_dur, annotation_filter });
+  singlePlotRaw(file, channels, t_start, t_dur, annotation_filter, annotation_filter_active) {
+    return _postForm('/api/single/plot/raw', { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active });
   },
-  singlePlotFiltered(file, channels, t_start, t_dur, opts, annotation_filter) {
-    return _postForm('/api/single/plot/filtered', { file, channels, t_start, t_dur, annotation_filter, ...opts });
+  singlePlotFiltered(file, channels, t_start, t_dur, opts, annotation_filter, annotation_filter_active) {
+    return _postForm('/api/single/plot/filtered', { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active, ...opts });
   },
-  singlePlotSubband(file, channel, t_start, t_dur, subbands, opts, annotation_filter) {
-    return _postForm('/api/single/plot/subband', { file, channel, t_start, t_dur, subbands, annotation_filter, ...opts });
+  singlePlotSubband(file, channel, t_start, t_dur, subbands, opts, annotation_filter, annotation_filter_active) {
+    return _postForm('/api/single/plot/subband', { file, channel, t_start, t_dur, subbands, annotation_filter, annotation_filter_active, ...opts });
   },
   singlePlotIca(file, opts) {
     return _postForm('/api/single/plot/ica', { file, ...opts });

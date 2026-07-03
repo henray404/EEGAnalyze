@@ -168,11 +168,9 @@ function SingleFilePage() {
   const [erdTarget, setErdTarget] = useState('');
   const [erdIntraTrial, setErdIntraTrial] = useState(false);
   const [subbandSel, setSubbandSel] = useState(['delta', 'theta', 'alpha', 'beta']);
-  // Seleksi data untuk ekstraksi fitur (terpisah dari flagFilter yang cuma
-  // filter tampilan annotation di plot). 'task' = per nama task, 'occurrence'
-  // = per kemunculan (mis. Thinking pertama). Kosong = tidak proses apa-apa.
-  const [selectionMode, setSelectionMode] = useState('task');
-  const [selectedTasks, setSelectedTasks] = useState([]);
+  // Seleksi data per-occurrence (mis. "Thinking #1"). Satu state ini dipakai
+  // baik untuk filter tampilan annotation di plot maupun untuk menentukan
+  // segmen mana yang diekstrak fiturnya. Kosong = tidak ada yang ditampilkan/diproses.
   const [selectedOccs, setSelectedOccs] = useState([]);  // ["Thinking|1", ...]
   const [tab, setTab] = useState('raw');
 
@@ -192,9 +190,26 @@ function SingleFilePage() {
   const [tStart, setTStart] = useState(0);
   const [tDur, setTDur] = useState(5);
   const [subbandChannel, setSubbandChannel] = useState('');
-  const [flagFilter, setFlagFilter] = useState([]);  // [] = show all; non-empty = whitelist
 
   const fileInputRef = useRef(null);
+
+  // Auto-jump viewport (tStart/tDur) ke occurrence terpilih begitu user
+  // mengisolasi seleksi (subset, bukan semua/nol). Jump ke occurrence
+  // paling awal kalau lebih dari satu terpilih. Tidak dipicu saat default
+  // "semua terpilih" atau saat "Hapus Semua" supaya tidak mengganggu
+  // navigasi manual pada kondisi normal.
+  useEffect(() => {
+    const occs = meta?.occurrences || [];
+    if (occs.length === 0 || selectedOccs.length === 0 || selectedOccs.length === occs.length) return;
+    const selected = occs
+      .filter(o => selectedOccs.includes(`${o.task}|${o.occurrence}`))
+      .sort((a, b) => a.onset - b.onset);
+    if (!selected.length) return;
+    const first = selected[0];
+    setTStart(Math.max(0, first.onset - 0.5));
+    setTDur(Math.max(1, (first.duration || 5) + 1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOccs]);
 
   // Preset mode: bandpass global mengikuti gabungan subband yang dipilih di
   // chip "Preset Subband" (bpSubbands). Sebelumnya chip ini tak pernah dibaca
@@ -205,39 +220,61 @@ function SingleFilePage() {
     return [Math.min(...sel.map(s => s.low)), Math.max(...sel.map(s => s.high))];
   };
 
-  const buildProcessOpts = () => ({
-    bp_low: filterMode === 'preset' ? presetBpRange()[0] : bpLow,
-    bp_high: filterMode === 'preset' ? presetBpRange()[1] : bpHigh,
-    bp_order: bpOrder,
-    use_notch: notchOn,
-    notch_freq: notchHz,
-    use_car: carOn,
-    use_amplitude: amplitudeOn,
-    use_ica: icaOn,
-    ica_method: icaMethod,
-    ica_n: icaAuto ? null : icaN,
-    subbands: subbandSel.join(','),
-    features: features
-      .map(f => AppConfig.FEATURES_BACKEND_MAP[f] || f.toLowerCase())
-      .join(','),
-    include_frequency: true,
-    chunk_mode: extractMode === 'chunk',
-    chunk_duration: chunkDur,
-    channels_filter: selectedChannels.join(','),
-    // Seleksi data eksplisit. flagFilter TIDAK lagi dipakai di sini (itu cuma
-    // filter tampilan annotation di plot). Kosong = backend tolak (400).
-    selection_mode: selectionMode,
-    selected: (selectionMode === 'occurrence' ? selectedOccs : selectedTasks).join(','),
-    selection_active: 'true',
-  });
+  // Seleksi occurrence bisa "utuh per task" (semua/none occurrence suatu task
+  // terpilih) -> setara mode lama "Per Task", backend tetap dukung chunking.
+  // Begitu ada task yang cuma sebagian occurrence-nya terpilih (isolasi
+  // occurrence spesifik, mis. cuma "Thinking #1"), backend wajib pakai mode
+  // occurrence murni (full-data per occurrence, chunk tidak berlaku di sana).
+  const isWholeTaskSelection = () => {
+    const occs = meta?.occurrences || [];
+    if (occs.length === 0) return true;
+    const tasks = Array.from(new Set(occs.map(o => o.task)));
+    return tasks.every(t => {
+      const keys = occs.filter(o => o.task === t).map(o => `${o.task}|${o.occurrence}`);
+      const selectedCount = keys.filter(k => selectedOccs.includes(k)).length;
+      return selectedCount === 0 || selectedCount === keys.length;
+    });
+  };
+
+  const buildProcessOpts = () => {
+    const wholeTask = isWholeTaskSelection();
+    const selectedTaskNames = wholeTask
+      ? Array.from(new Set(
+          (meta?.occurrences || [])
+            .filter(o => selectedOccs.includes(`${o.task}|${o.occurrence}`))
+            .map(o => o.task),
+        ))
+      : [];
+    return {
+      bp_low: filterMode === 'preset' ? presetBpRange()[0] : bpLow,
+      bp_high: filterMode === 'preset' ? presetBpRange()[1] : bpHigh,
+      bp_order: bpOrder,
+      use_notch: notchOn,
+      notch_freq: notchHz,
+      use_car: carOn,
+      use_amplitude: amplitudeOn,
+      use_ica: icaOn,
+      ica_method: icaMethod,
+      ica_n: icaAuto ? null : icaN,
+      subbands: subbandSel.join(','),
+      features: features
+        .map(f => AppConfig.FEATURES_BACKEND_MAP[f] || f.toLowerCase())
+        .join(','),
+      include_frequency: true,
+      chunk_mode: extractMode === 'chunk',
+      chunk_duration: chunkDur,
+      channels_filter: selectedChannels.join(','),
+      // Seleksi data eksplisit. Kosong = backend tolak (400).
+      selection_mode: wholeTask ? 'task' : 'occurrence',
+      selected: (wholeTask ? selectedTaskNames : selectedOccs).join(','),
+      selection_active: 'true',
+    };
+  };
 
   // File tanpa task & occurrence (mis. TXT OpenBCI) diproses sebagai seluruh
   // file -> seleksi tidak wajib, tombol tidak diblok.
-  const hasSegmentation = () =>
-    ((meta?.tasks?.length || 0) + (meta?.occurrences?.length || 0)) > 0;
-  const selectionEmpty = () =>
-    hasSegmentation() &&
-    (selectionMode === 'occurrence' ? selectedOccs : selectedTasks).length === 0;
+  const hasSegmentation = () => (meta?.occurrences?.length || 0) > 0;
+  const selectionEmpty = () => hasSegmentation() && selectedOccs.length === 0;
 
   const handleUpload = async (f) => {
     if (!f) return;
@@ -249,7 +286,6 @@ function SingleFilePage() {
     setDone(false);
     setResults(null);
     setRawPlot(null); setFilteredPlot(null); setSubbandPlot(null); setIcaPlot(null);
-    setFlagFilter([]);
     try {
       const data = await Api.singleUpload(f);
       setMeta(data);
@@ -258,9 +294,8 @@ function SingleFilePage() {
       // Pakai chs langsung (bukan selectedChannels yang masih stale dari file
       // sebelumnya) supaya subbandChannel selalu ada di file baru.
       if (chs.length > 0) setSubbandChannel(chs[0]);
-      // Default seleksi = semua task & semua occurrence (perilaku lama), user
-      // bebas kurangi. Kosong nanti diblok tombol Ekstrak.
-      setSelectedTasks(data.tasks || []);
+      // Default seleksi = semua occurrence (perilaku lama), user bebas kurangi.
+      // Kosong nanti diblok tombol Ekstrak & sembunyikan semua annotation di plot.
       setSelectedOccs((data.occurrences || []).map(o => `${o.task}|${o.occurrence}`));
     } catch (e) {
       setUploadError(e.message || 'Tidak dapat terhubung ke backend. Pastikan uvicorn berjalan di port 8000.');
@@ -325,10 +360,13 @@ function SingleFilePage() {
     if (!file) return;
     setPlotLoading(true);
     setPlotError(null);
-    const annFilterCSV = flagFilter.join(',');
+    // Filter tampilan annotation di plot pakai seleksi occurrence yang sama
+    // dengan yang dipakai untuk ekstraksi fitur (satu sumber kebenaran).
+    const annFilterCSV = selectedOccs.join(',');
+    const annFilterActive = hasSegmentation();
     try {
       if (kind === 'raw') {
-        const r = await Api.singlePlotRaw(file, selectedChannels.slice(0, 8), tStart, tDur, annFilterCSV);
+        const r = await Api.singlePlotRaw(file, selectedChannels.slice(0, 8), tStart, tDur, annFilterCSV, annFilterActive);
         setRawPlot(r.figure);
       } else if (kind === 'filtered') {
         const opts = buildProcessOpts();
@@ -339,11 +377,12 @@ function SingleFilePage() {
           use_car: opts.use_car, use_amplitude: opts.use_amplitude,
         },
           annFilterCSV,
+          annFilterActive,
         );
         setFilteredPlot(r.figure);
       } else if (kind === 'subband') {
         if (!subbandChannel) { setPlotError('Pilih channel'); return; }
-        const r = await Api.singlePlotSubband(file, subbandChannel, tStart, tDur, subbandSel, {}, annFilterCSV);
+        const r = await Api.singlePlotSubband(file, subbandChannel, tStart, tDur, subbandSel, {}, annFilterCSV, annFilterActive);
         setSubbandPlot(r.figure);
       } else if (kind === 'ica') {
         const r = await Api.singlePlotIca(file, {
@@ -353,6 +392,7 @@ function SingleFilePage() {
           t_start: tStart,
           t_dur: tDur,
           annotation_filter: annFilterCSV,
+          annotation_filter_active: annFilterActive,
         });
         setIcaPlot(r.figure);
       }
@@ -390,8 +430,8 @@ function SingleFilePage() {
     setFile(null); setMeta(null); setResults(null); setDone(false);
     setApiError(null);
     setRawPlot(null); setFilteredPlot(null); setSubbandPlot(null); setIcaPlot(null);
-    setSelectedChannels([]); setSubbandChannel(''); setFlagFilter([]);
-    setSelectedTasks([]); setSelectedOccs([]);
+    setSelectedChannels([]); setSubbandChannel('');
+    setSelectedOccs([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -503,12 +543,12 @@ function SingleFilePage() {
               </div>
             )}
 
-            {/* === SECTION 2b: Flags / Annotations === */}
-            {meta?.annotations?.length > 0 && (
+            {/* === SECTION 2b: Flags / Annotations (juga jadi seleksi data proses) === */}
+            {meta?.occurrences?.length > 0 && (
               <FlagsCard
-                annotations={meta.annotations}
-                flagFilter={flagFilter}
-                setFlagFilter={setFlagFilter}
+                occurrences={meta.occurrences}
+                selectedOccs={selectedOccs}
+                setSelectedOccs={setSelectedOccs}
                 onJump={(onset) => { setTStart(Math.max(0, onset - 0.5)); }}
               />
             )}
@@ -641,6 +681,11 @@ function SingleFilePage() {
               {extractMode === 'chunk' && (
                 <Slider min={0.25} max={2.0} value={chunkDur} onChange={setChunkDur} label={`Durasi Chunk: ${chunkDur} s`} snapPoints={[0.25, 0.5, 1.0, 1.5, 2.0]} />
               )}
+              {extractMode === 'chunk' && !isWholeTaskSelection() && (
+                <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                  Chunk tidak berlaku untuk seleksi occurrence spesifik (mis. cuma "Thinking #1") — akan diproses sebagai Full Data untuk occurrence itu.
+                </div>
+              )}
               <div className="form-row">
                 <label>Pilih fitur statistik</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -704,81 +749,12 @@ function SingleFilePage() {
               </div>
             </div>
 
-            {/* === SECTION 6: Pilih Data (Task / Occurrence) === */}
-            {meta && (
-              <div className="side-section">
-                <div className="side-title-row">
-                  <span className="eyebrow">STEP 05</span>
-                  <h3>Pilih Data yang Diproses</h3>
-                </div>
-                {!hasSegmentation() ? (
-                  <div style={{ padding: '10px 14px', background: 'var(--surface-tint)', borderRadius: 12, fontSize: 12, color: 'var(--text-muted)' }}>
-                    File ini tidak punya annotation/task. Akan diproses sebagai <strong>seluruh file</strong> (satu segmen).
-                  </div>
-                ) : (
-                <div className="chip-group mb-12">
-                  <button className={`chip ${selectionMode === 'task' ? 'selected' : ''}`}
-                    onClick={() => setSelectionMode('task')}>Per Task</button>
-                  <button className={`chip ${selectionMode === 'occurrence' ? 'selected' : ''}`}
-                    onClick={() => setSelectionMode('occurrence')}>Per Occurrence</button>
-                </div>
-                )}
-                {hasSegmentation() && (selectionMode === 'task' ? (
-                  <>
-                    <div className="row mb-12" style={{ flexWrap: 'wrap', gap: 6 }}>
-                      <button className="btn-ghost-accent" onClick={() => setSelectedTasks([...(meta.tasks || [])])}>Pilih Semua</button>
-                      <button className="btn-ghost" onClick={() => setSelectedTasks([])}>Hapus Semua</button>
-                      <span className="spacer" />
-                      <span className="chip-mini accent">{selectedTasks.length} / {(meta.tasks || []).length}</span>
-                    </div>
-                    <div className="chip-group">
-                      {(meta.tasks || []).map(t => {
-                        const sel = selectedTasks.includes(t);
-                        return (
-                          <button key={t}
-                            className={`chip ${sel ? 'selected' : ''}`}
-                            style={{ fontSize: 11.5, padding: '5px 12px', height: 28 }}
-                            onClick={() => setSelectedTasks(sel ? selectedTasks.filter(x => x !== t) : [...selectedTasks, t])}>
-                            {t}
-                          </button>
-                        );
-                      })}
-                      {(meta.tasks || []).length === 0 && (
-                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Tidak ada task/annotation di file ini.</span>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="row mb-12" style={{ flexWrap: 'wrap', gap: 6 }}>
-                      <button className="btn-ghost-accent" onClick={() => setSelectedOccs((meta.occurrences || []).map(o => `${o.task}|${o.occurrence}`))}>Pilih Semua</button>
-                      <button className="btn-ghost" onClick={() => setSelectedOccs([])}>Hapus Semua</button>
-                      <span className="spacer" />
-                      <span className="chip-mini accent">{selectedOccs.length} / {(meta.occurrences || []).length}</span>
-                    </div>
-                    <div className="chip-group" style={{ maxHeight: 200, overflowY: 'auto' }}>
-                      {(meta.occurrences || []).map(o => {
-                        const key = `${o.task}|${o.occurrence}`;
-                        const sel = selectedOccs.includes(key);
-                        return (
-                          <button key={key}
-                            className={`chip ${sel ? 'selected' : ''}`}
-                            style={{ fontSize: 11.5, padding: '5px 12px', height: 28 }}
-                            title={`onset ${o.onset?.toFixed?.(2)}s`}
-                            onClick={() => setSelectedOccs(sel ? selectedOccs.filter(x => x !== key) : [...selectedOccs, key])}>
-                            {o.label || key}
-                          </button>
-                        );
-                      })}
-                      {(meta.occurrences || []).length === 0 && (
-                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Tidak ada occurrence (file tanpa annotation).</span>
-                      )}
-                    </div>
-                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-                      Mode occurrence pakai Full Data (chunk belum didukung di sini).
-                    </div>
-                  </>
-                ))}
+            {/* Seleksi data yang diproses sekarang dikontrol langsung di kartu
+                FLAGS/TASKS (SECTION 2b, di atas) via selectedOccs. Untuk file
+                tanpa annotation/task, backend otomatis proses seluruh file. */}
+            {meta && !hasSegmentation() && (
+              <div style={{ padding: '10px 14px', background: 'var(--surface-tint)', borderRadius: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+                File ini tidak punya annotation/task. Akan diproses sebagai <strong>seluruh file</strong> (satu segmen).
               </div>
             )}
 
@@ -794,7 +770,7 @@ function SingleFilePage() {
               <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--danger)' }}>
                 {selectedChannels.length === 0 ? 'Pilih minimal 1 channel. ' : ''}
                 {features.length === 0 ? 'Pilih minimal 1 fitur. ' : ''}
-                {selectionEmpty() ? (selectionMode === 'occurrence' ? 'Pilih minimal 1 occurrence.' : 'Pilih minimal 1 task.') : ''}
+                {selectionEmpty() ? 'Pilih minimal 1 occurrence di kartu FLAGS/TASKS.' : ''}
               </div>
             )}
 
@@ -885,66 +861,82 @@ function SingleFilePage() {
   );
 }
 
-function FlagsCard({ annotations, flagFilter, setFlagFilter, onJump }) {
-  const uniqueDescs = Array.from(new Set(annotations.map(a => a.description)));
+// Kartu tunggal untuk seleksi occurrence — dipakai baik untuk filter tampilan
+// annotation di plot (Raw/Filtered/Subband/ICA) maupun untuk menentukan
+// segmen mana yang diekstrak fiturnya (dikirim sebagai selectedOccs).
+function FlagsCard({ occurrences, selectedOccs, setSelectedOccs, onJump }) {
+  const keyOf = (o) => `${o.task}|${o.occurrence}`;
+  const allKeys = occurrences.map(keyOf);
+  const uniqueTasks = Array.from(new Set(occurrences.map(o => o.task)));
   const counts = {};
-  for (const a of annotations) counts[a.description] = (counts[a.description] || 0) + 1;
-  const filterActive = flagFilter.length > 0;
-  const toggleDesc = (d) => {
-    if (flagFilter.includes(d)) setFlagFilter(flagFilter.filter(x => x !== d));
-    else setFlagFilter([...flagFilter, d]);
+  for (const o of occurrences) counts[o.task] = (counts[o.task] || 0) + 1;
+
+  const toggleOcc = (key) => {
+    setSelectedOccs(selectedOccs.includes(key)
+      ? selectedOccs.filter(x => x !== key)
+      : [...selectedOccs, key]);
   };
-  const showCount = filterActive
-    ? annotations.filter(a => flagFilter.includes(a.description)).length
-    : annotations.length;
+  const toggleTask = (task) => {
+    const taskKeys = occurrences.filter(o => o.task === task).map(keyOf);
+    const allSelected = taskKeys.every(k => selectedOccs.includes(k));
+    setSelectedOccs(allSelected
+      ? selectedOccs.filter(x => !taskKeys.includes(x))
+      : Array.from(new Set([...selectedOccs, ...taskKeys])));
+  };
+
   return (
     <div className="side-section">
       <div className="side-title-row">
         <span className="eyebrow">FLAGS / TASKS</span>
-        <h3>Annotations ({annotations.length})</h3>
+        <h3>Annotations ({occurrences.length})</h3>
       </div>
       <div className="row mb-12" style={{ flexWrap: 'wrap', gap: 6 }}>
-        <button className="btn-ghost-accent" onClick={() => setFlagFilter([])}>
+        <button className="btn-ghost-accent" onClick={() => setSelectedOccs([...allKeys])}>
           Tampilkan Semua
         </button>
-        <button className="btn-ghost" onClick={() => setFlagFilter([...uniqueDescs])}>
-          Pilih Semua
+        <button className="btn-ghost" onClick={() => setSelectedOccs([])}>
+          Hapus Semua
         </button>
         <span className="spacer" />
-        <span className="chip-mini accent">{showCount} aktif</span>
+        <span className="chip-mini accent">{selectedOccs.length} aktif</span>
       </div>
       <div className="chip-group mb-12">
-        {uniqueDescs.map(d => {
-          const selected = filterActive ? flagFilter.includes(d) : true;
+        {uniqueTasks.map(t => {
+          const taskKeys = occurrences.filter(o => o.task === t).map(keyOf);
+          const selected = taskKeys.every(k => selectedOccs.includes(k));
           return (
-            <button key={d}
+            <button key={t}
               className={`chip ${selected ? 'selected' : ''}`}
               style={{ fontSize: 11.5, padding: '5px 12px', height: 28 }}
-              onClick={() => toggleDesc(d)}
-              title={`Klik untuk ${selected ? 'sembunyikan' : 'tampilkan'} di plot`}>
-              {d} ({counts[d]})
+              onClick={() => toggleTask(t)}
+              title={`Klik untuk ${selected ? 'lepas' : 'pilih'} semua occurrence ${t}`}>
+              {t} ({counts[t]})
             </button>
           );
         })}
       </div>
       <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {annotations.map((a, i) => {
-          const visible = !filterActive || flagFilter.includes(a.description);
+        {occurrences.map(o => {
+          const key = keyOf(o);
+          const selected = selectedOccs.includes(key);
           return (
-            <div key={i} className="row" style={{
-              padding: '6px 10px', borderRadius: 8,
-              background: visible ? 'var(--surface-tint)' : 'transparent',
-              opacity: visible ? 1 : 0.45,
-              fontSize: 11.5,
-            }}>
+            <div key={key} className="row"
+              onClick={() => toggleOcc(key)}
+              style={{
+                padding: '6px 10px', borderRadius: 8, cursor: 'pointer',
+                background: selected ? 'var(--surface-tint)' : 'transparent',
+                opacity: selected ? 1 : 0.45,
+                fontSize: 11.5,
+              }}
+              title={`Klik untuk ${selected ? 'lepas' : 'pilih'} occurrence ini saja`}>
               <span style={{ fontFamily: 'JetBrains Mono, monospace', minWidth: 56, color: 'var(--accent)', fontWeight: 600 }}>
-                {a.onset.toFixed(2)}s
+                {o.onset.toFixed(2)}s
               </span>
-              <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>{a.description}</span>
-              {a.duration > 0 && (
-                <span className="chip-mini">{a.duration.toFixed(2)}s</span>
+              <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>{o.label || key}</span>
+              {o.duration > 0 && (
+                <span className="chip-mini">{o.duration.toFixed(2)}s</span>
               )}
-              <button className="chip-mini accent" onClick={() => onJump(a.onset)} style={{ cursor: 'pointer', border: 'none' }}>
+              <button className="chip-mini accent" onClick={(e) => { e.stopPropagation(); onJump(o.onset); }} style={{ cursor: 'pointer', border: 'none' }}>
                 Jump
               </button>
             </div>

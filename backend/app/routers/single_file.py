@@ -131,24 +131,34 @@ def _apply_filters(
 
 def _annotations_in_window(
     loader: EEGLoader, t_start: float, t_end: float,
-    allowed: list = None,
+    allowed_occ_keys: set = None,
+    filter_active: bool = False,
 ) -> list:
     """Return annotations overlapping [t_start, t_end] as list of dicts.
 
-    allowed: optional list of descriptions to keep. None or empty -> keep all.
+    allowed_occ_keys: set berisi "task|occurrence" (occurrence 1-based per
+        nama task, urutan sama seperti EEGLoader.get_task_occurrences).
+        Dipakai untuk seleksi occurrence spesifik, bukan sekadar nama task.
+    filter_active: False -> abaikan allowed_occ_keys, tampilkan semua
+        annotation di window. True dengan allowed_occ_keys kosong -> tidak
+        ada annotation yang ditampilkan (user sudah "Hapus Semua").
     """
     if loader.raw is None:
         return []
-    allow_set = set(allowed) if allowed else None
+    keys = allowed_occ_keys or set()
     out = []
+    counter = {}
     for a in loader.raw.annotations:
+        desc = str(a["description"])
+        if desc == "Thinking and Acting":
+            desc = "Think_Acting"
+        counter[desc] = counter.get(desc, 0) + 1
         onset = float(a["onset"])
         dur = float(a["duration"])
         end = onset + dur
         if end < t_start or onset > t_end:
             continue
-        desc = str(a["description"])
-        if allow_set is not None and desc not in allow_set:
+        if filter_active and f"{desc}|{counter[desc]}" not in keys:
             continue
         out.append({
             "onset": onset,
@@ -202,12 +212,23 @@ def _signal_to_plotly_fig(
         fig.update_layout(title=title)
         return json.loads(fig.to_json())
 
-    spread = float(np.std(data) * 6 + 1e-6)
+    # Spread dihitung dari median std PER CHANNEL (bukan std global data yang
+    # sudah di-flatten). Std global ikut kena selisih baseline antar channel
+    # (mis. channel OpenBCI mentah yang belum di-referensi bisa punya mean
+    # ratusan ribu uV berbeda-beda per channel) sehingga jauh lebih besar
+    # daripada variasi sinyal sesungguhnya -> fluktuasi asli tiap channel jadi
+    # kelihatan flat karena skala sumbu-y ketarik oleh selisih baseline itu,
+    # bukan oleh amplitudo sinyal. Median (bukan mean) dipakai supaya satu
+    # channel yang rusak/railed tidak ikut menarik skala channel lain.
+    per_ch_std = np.std(data, axis=1)
+    spread = float(np.median(per_ch_std) * 6 + 1e-6)
+    means = np.mean(data, axis=1, keepdims=True)
+    centered = data - means
     for idx, ch in enumerate(ch_names):
         offset = -idx * spread
         fig.add_trace(go.Scatter(
             x=times.tolist(),
-            y=(data[idx] + offset).tolist(),
+            y=(centered[idx] + offset).tolist(),
             mode="lines",
             name=ch,
             line=dict(width=1.4, color=_ACCENT_COLORS[idx % len(_ACCENT_COLORS)]),
@@ -571,14 +592,15 @@ def plot_raw(
     t_start: float = Form(0.0),
     t_dur: float = Form(5.0),
     annotation_filter: str = Form(""),
+    annotation_filter_active: str = Form("false"),
 ):
     loader = EEGLoader()
     try:
         _load_uploaded_file(loader, file)
         ch_list = _parse_csv_list(channels) or loader.channel_names[:8]
         times, data, used = _slice_times(loader, t_start, t_dur, ch_list)
-        allowed = _parse_csv_list(annotation_filter)
-        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed)
+        allowed = set(_parse_csv_list(annotation_filter))
+        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         fig = _signal_to_plotly_fig(times, data, used, title="Raw EEG Signal", annotations=anns)
         return JSONResponse(content={"figure": fig, "channels": used, "annotations": anns})
     except HTTPException:
@@ -606,6 +628,7 @@ def plot_filtered(
     use_car: str = Form("false"),
     use_amplitude: str = Form("false"),
     annotation_filter: str = Form(""),
+    annotation_filter_active: str = Form("false"),
 ):
     loader = EEGLoader()
     try:
@@ -624,8 +647,8 @@ def plot_filtered(
         title = f"Filtered Signal . Bandpass {bp_low}-{bp_high} Hz"
         if _to_bool(use_notch):
             title += f" . Notch {notch_freq:g} Hz"
-        allowed = _parse_csv_list(annotation_filter)
-        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed)
+        allowed = set(_parse_csv_list(annotation_filter))
+        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         fig = _signal_to_plotly_fig(times, data, used, title=title, annotations=anns)
         return JSONResponse(content={"figure": fig, "channels": used, "annotations": anns})
     except HTTPException:
@@ -647,6 +670,7 @@ def plot_subband(
     t_dur: float = Form(5.0),
     subbands: str = Form("delta,theta,alpha,beta,gamma"),
     annotation_filter: str = Form(""),
+    annotation_filter_active: str = Form("false"),
 ):
     from plotly.subplots import make_subplots
     from scipy.signal import butter, filtfilt
@@ -705,8 +729,8 @@ def plot_subband(
                 row=r, col=1,
             )
 
-        allowed = _parse_csv_list(annotation_filter)
-        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed)
+        allowed = set(_parse_csv_list(annotation_filter))
+        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         shapes = []
         text_anns = []
         for r_idx in range(1, rows + 1):
@@ -790,6 +814,7 @@ def plot_ica(
     t_start: float = Form(0.0),
     t_dur: float = Form(5.0),
     annotation_filter: str = Form(""),
+    annotation_filter_active: str = Form("false"),
 ):
     loader = EEGLoader()
     try:
@@ -808,17 +833,24 @@ def plot_ica(
         data = loader.raw.get_data(start=start_idx, stop=end_idx) * 1e6
         times = (np.arange(data.shape[1]) / sfreq + t_start).tolist()
 
-        allowed = _parse_csv_list(annotation_filter)
-        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed)
+        allowed = set(_parse_csv_list(annotation_filter))
+        anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         shapes, text_anns = _annotation_shapes(anns)
 
         fig = go.Figure()
         n_ch = data.shape[0]
-        spread = float(np.std(data) * 6 + 1e-6)
+        # Sama seperti _signal_to_plotly_fig: spread dari median std PER
+        # COMPONENT + data di-mean-center dulu, supaya satu IC dengan
+        # magnitude jauh lebih besar (mis. artifact) tidak menekan skala
+        # sumbu-y sehingga IC lain kelihatan flat.
+        per_ic_std = np.std(data, axis=1)
+        spread = float(np.median(per_ic_std) * 6 + 1e-6)
+        means = np.mean(data, axis=1, keepdims=True)
+        centered = data - means
         for i in range(n_ch):
             fig.add_trace(go.Scatter(
                 x=times,
-                y=(data[i] - i * spread).tolist(),
+                y=(centered[i] - i * spread).tolist(),
                 mode="lines",
                 name=f"IC {i+1}",
                 line=dict(width=1.2, color=_ACCENT_COLORS[i % len(_ACCENT_COLORS)]),
