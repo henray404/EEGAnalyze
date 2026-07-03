@@ -53,22 +53,6 @@ def default_destination() -> Path:
     return Path.home() / "EEGAnalyze"
 
 
-def venv_dir(dest: Path) -> Path:
-    return dest / "backend" / ".venv"
-
-
-def venv_python(dest: Path) -> Path:
-    if detect_os() == "windows":
-        return venv_dir(dest) / "Scripts" / "python.exe"
-    return venv_dir(dest) / "bin" / "python"
-
-
-def venv_pip(dest: Path) -> Path:
-    if detect_os() == "windows":
-        return venv_dir(dest) / "Scripts" / "pip.exe"
-    return venv_dir(dest) / "bin" / "pip"
-
-
 def check_git() -> bool:
     return shutil.which("git") is not None
 
@@ -94,10 +78,22 @@ def destination_is_safe(dest: Path) -> bool:
 # --------------------------------------------------------------------- #
 
 def start_bat_content() -> str:
+    # First-run venv/pip setup happens HERE, in the script itself (plain
+    # "python" resolved via normal PATH lookup in a real cmd.exe process),
+    # not inside install.py's own process. install.py runs as a frozen
+    # PyInstaller exe there, where sys.executable IS the exe itself - so
+    # shelling out to [sys.executable, "-m", "venv", ...] silently
+    # relaunches the whole GUI installer as a hung child process instead
+    # of creating a venv.
     return (
         "@echo off\r\n"
         "cd /d \"%~dp0\"\r\n"
         "set VENV_PY=backend\\.venv\\Scripts\\python.exe\r\n"
+        "if not exist \"%VENV_PY%\" (\r\n"
+        "    echo First run - setting up, this can take a few minutes...\r\n"
+        "    python -m venv backend\\.venv\r\n"
+        "    \"%VENV_PY%\" -m pip install -r backend\\requirements.txt\r\n"
+        ")\r\n"
         "start \"EEG Backend\" cmd /k \"%VENV_PY%\" -m uvicorn app.main:app "
         "--app-dir backend --port 8000\r\n"
         "start \"EEG Frontend\" cmd /k \"%VENV_PY%\" -m http.server 5173 "
@@ -112,6 +108,11 @@ def start_sh_content() -> str:
         "#!/bin/bash\n"
         "cd \"$(dirname \"$0\")\"\n"
         "VENV_PY=\"backend/.venv/bin/python\"\n"
+        "if [ ! -f \"$VENV_PY\" ]; then\n"
+        "    echo \"First run - setting up, this can take a few minutes...\"\n"
+        "    python3 -m venv backend/.venv\n"
+        "    \"$VENV_PY\" -m pip install -r backend/requirements.txt\n"
+        "fi\n"
         "\"$VENV_PY\" -m uvicorn app.main:app --app-dir backend --port 8000 &\n"
         "BACKEND_PID=$!\n"
         "\"$VENV_PY\" -m http.server 5173 --directory frontend_v2 &\n"
@@ -268,17 +269,6 @@ def is_existing_clone(dest: Path) -> bool:
     return (dest / ".git").exists()
 
 
-def venv_command(dest: Path) -> list[str]:
-    return [sys.executable, "-m", "venv", str(venv_dir(dest))]
-
-
-def pip_install_command(dest: Path) -> list[str]:
-    return [
-        str(venv_pip(dest)), "install", "-r",
-        str(dest / "backend" / "requirements.txt"),
-    ]
-
-
 def run_command_streaming(
     cmd: list[str], on_line, heartbeat_interval: float = 15.0,
     heartbeat_message: str = "... still working ...",
@@ -319,9 +309,16 @@ def run_command_streaming(
 
 
 def run_setup(url: str, dest: Path, on_line) -> bool:
-    """Clone repo (or pull latest if dest is already a clone), create venv,
-    install backend deps. Returns True only if all steps succeed. Calls
-    on_line(str) with progress as it happens.
+    """Clone repo, or pull latest if dest is already a clone. Returns True
+    on success. Calls on_line(str) with progress as it happens.
+
+    Deliberately stops here - venv setup and dependency install happen in
+    start.bat/start.sh (see start_bat_content), not in this function. This
+    process is a frozen PyInstaller exe when run as install.exe, where
+    sys.executable IS the exe itself; shelling out to
+    [sys.executable, "-m", "venv", ...] from here would silently relaunch
+    the whole GUI installer as a subprocess instead of creating a venv,
+    hanging forever waiting for a GUI no one is looking at.
     """
     if is_existing_clone(dest):
         on_line("Existing installation found, pulling latest changes...")
@@ -342,25 +339,7 @@ def run_setup(url: str, dest: Path, on_line) -> bool:
             on_line(f"FAILED (exit code {code}) cloning repository")
             return False
 
-    on_line("Creating Python virtual environment...")
-    code = run_command_streaming(
-        venv_command(dest), on_line,
-        heartbeat_message="... still creating virtual environment ...",
-    )
-    if code != 0:
-        on_line(f"FAILED (exit code {code}) creating virtual environment")
-        return False
-
-    on_line("Installing backend dependencies...")
-    code = run_command_streaming(
-        pip_install_command(dest), on_line,
-        heartbeat_message="... still installing dependencies (this can take a few minutes) ...",
-    )
-    if code != 0:
-        on_line(f"FAILED (exit code {code}) installing dependencies")
-        return False
-
-    on_line("Setup complete.")
+    on_line("Clone complete.")
     return True
 
 

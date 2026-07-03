@@ -27,35 +27,6 @@ def test_default_destination_is_under_home():
     assert dest == Path.home() / "EEGAnalyze"
 
 
-def test_venv_dir():
-    dest = Path("/tmp/myproject")
-    assert install.venv_dir(dest) == dest / "backend" / ".venv"
-
-
-def test_venv_python_windows(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Windows")
-    dest = Path("/tmp/myproject")
-    assert install.venv_python(dest) == dest / "backend" / ".venv" / "Scripts" / "python.exe"
-
-
-def test_venv_python_mac(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    dest = Path("/tmp/myproject")
-    assert install.venv_python(dest) == dest / "backend" / ".venv" / "bin" / "python"
-
-
-def test_venv_pip_windows(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Windows")
-    dest = Path("/tmp/myproject")
-    assert install.venv_pip(dest) == dest / "backend" / ".venv" / "Scripts" / "pip.exe"
-
-
-def test_venv_pip_linux(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Linux")
-    dest = Path("/tmp/myproject")
-    assert install.venv_pip(dest) == dest / "backend" / ".venv" / "bin" / "pip"
-
-
 def test_check_git_found(monkeypatch):
     monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/git")
     assert install.check_git() is True
@@ -109,6 +80,19 @@ def test_start_bat_content_launches_both_servers_and_browser():
     assert "start http://localhost:5173" in content
 
 
+def test_start_bat_content_sets_up_venv_on_first_run():
+    # First-run venv/pip setup lives in the script itself (a real console
+    # window, on-PATH "python" - not sys.executable) rather than inside
+    # install.py's own process, which is a frozen PyInstaller exe: there,
+    # sys.executable IS the exe itself, so shelling out to
+    # [sys.executable, "-m", "venv", ...] silently relaunches the whole
+    # GUI installer as a hung child process instead of creating a venv.
+    content = install.start_bat_content()
+    assert "if not exist" in content
+    assert "python -m venv backend\\.venv" in content
+    assert "-m pip install -r backend\\requirements.txt" in content
+
+
 def test_start_sh_content_launches_both_servers_and_browser():
     content = install.start_sh_content()
     assert "backend/.venv/bin/python" in content
@@ -116,6 +100,12 @@ def test_start_sh_content_launches_both_servers_and_browser():
     assert "-m http.server 5173 --directory frontend_v2" in content
     assert "http://localhost:5173" in content
     assert content.startswith("#!/bin/bash\n")
+
+
+def test_start_sh_content_sets_up_venv_on_first_run():
+    content = install.start_sh_content()
+    assert "python3 -m venv backend/.venv" in content
+    assert "-m pip install -r backend/requirements.txt" in content
 
 
 def test_desktop_entry_content(tmp_path):
@@ -234,21 +224,6 @@ def test_is_existing_clone_true_when_git_dir_present(tmp_path):
     assert install.is_existing_clone(tmp_path) is True
 
 
-def test_venv_command():
-    dest = Path("/tmp/EEGAnalyze")
-    cmd = install.venv_command(dest)
-    assert cmd == [sys.executable, "-m", "venv", str(install.venv_dir(dest))]
-
-
-def test_pip_install_command():
-    dest = Path("/tmp/EEGAnalyze")
-    cmd = install.pip_install_command(dest)
-    assert cmd == [
-        str(install.venv_pip(dest)), "install", "-r",
-        str(dest / "backend" / "requirements.txt"),
-    ]
-
-
 def test_run_command_streaming_captures_output_and_exit_code():
     lines = []
     code = install.run_command_streaming(
@@ -324,20 +299,6 @@ def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
     assert any("FAILED" in line for line in lines)
 
 
-def test_run_setup_stops_after_venv_failure(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(cmd, on_line, **kwargs):
-        calls.append(cmd)
-        return 0 if len(calls) == 1 else 1  # clone succeeds, venv fails
-
-    monkeypatch.setattr(install, "run_command_streaming", fake_run)
-    lines = []
-    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
-    assert result is False
-    assert len(calls) == 2  # clone + venv attempted; pip never ran
-
-
 def test_run_setup_all_succeed(monkeypatch, tmp_path):
     calls = []
 
@@ -349,11 +310,14 @@ def test_run_setup_all_succeed(monkeypatch, tmp_path):
     lines = []
     result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
     assert result is True
-    assert len(calls) == 3
+    # Clone only - venv/pip setup lives in start.bat/start.sh now, not
+    # install.py's own process (see test_start_bat_content_sets_up_venv_on_first_run
+    # for why: sys.executable inside the frozen exe IS the exe itself).
+    assert len(calls) == 1
     assert any("complete" in line.lower() for line in lines)
 
 
-def test_run_setup_uses_distinct_heartbeat_message_per_step(monkeypatch, tmp_path):
+def test_run_setup_uses_a_heartbeat_message_naming_the_step(monkeypatch, tmp_path):
     heartbeat_messages = []
 
     def fake_run(cmd, on_line, **kwargs):
@@ -362,14 +326,8 @@ def test_run_setup_uses_distinct_heartbeat_message_per_step(monkeypatch, tmp_pat
 
     monkeypatch.setattr(install, "run_command_streaming", fake_run)
     install.run_setup("https://example.com/repo.git", tmp_path, lambda line: None)
-    # clone, venv, pip - each step's heartbeat should name that step, not a
-    # generic message, so a stuck-looking silence says what's actually slow.
-    assert len(heartbeat_messages) == 3
-    assert all(heartbeat_messages)  # none blank/None
-    assert len(set(heartbeat_messages)) == 3  # all three distinct
+    assert len(heartbeat_messages) == 1
     assert "clon" in heartbeat_messages[0].lower()
-    assert "virtual environment" in heartbeat_messages[1].lower()
-    assert "depend" in heartbeat_messages[2].lower()
 
 
 def test_run_setup_pulls_instead_of_cloning_for_existing_install(monkeypatch, tmp_path):
