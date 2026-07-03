@@ -416,12 +416,20 @@ class InstallerApp:
             ).pack(anchor="w", pady=8)
 
     def launch(self, dest: Path):
+        # cwd=str(dest) is required: start.bat has no "cd /d %~dp0" of its
+        # own (it only works by accident when double-clicked directly, since
+        # Explorer sets the CWD for you). Launched via subprocess like this,
+        # it would otherwise inherit the installer .exe's own CWD - wherever
+        # the user happened to save/run it from - and "pythonw launcher.py"
+        # silently fails to find launcher.py there (pythonw has no console
+        # to show the error, so it just does nothing).
         if detect_os() == "windows":
             subprocess.Popen(
-                ["cmd", "/c", "start", "", str(dest / "start.bat")], shell=False
+                ["cmd", "/c", "start", "", str(dest / "start.bat")],
+                shell=False, cwd=str(dest),
             )
         else:
-            subprocess.Popen(["bash", str(dest / "start.sh")])
+            subprocess.Popen(["bash", str(dest / "start.sh")], cwd=str(dest))
         self.root.destroy()
 
 
