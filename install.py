@@ -18,6 +18,19 @@ import tempfile
 import threading
 from pathlib import Path
 
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+except ImportError:
+    print(
+        "tkinter is not available on this Python install.\n"
+        "On Linux, install it with your package manager, e.g.:\n"
+        "  sudo apt install python3-tk\n"
+        "On Windows/Mac, reinstall Python from python.org with the "
+        "'tcl/tk' component enabled."
+    )
+    sys.exit(1)
+
 REPO_URL_DEFAULT = "https://github.com/henray404/EEGAnalyze.git"
 PYTHON_VERSION_FLOOR = (3, 10)
 
@@ -295,5 +308,170 @@ def run_setup(url: str, dest: Path, on_line) -> bool:
     return True
 
 
+# --------------------------------------------------------------------- #
+#  GUI
+# --------------------------------------------------------------------- #
+
+class InstallerApp:
+    def __init__(self, root: "tk.Tk"):
+        self.root = root
+        self.root.title("EEG Analysis Tool - Installer")
+        self.root.geometry("640x480")
+        self.dest_var = tk.StringVar(value=str(default_destination()))
+        self.url_var = tk.StringVar(value=REPO_URL_DEFAULT)
+        self.log_text = None
+        self.container = tk.Frame(self.root, padx=16, pady=16)
+        self.container.pack(fill="both", expand=True)
+        self.show_prereq_screen()
+
+    def clear(self):
+        for widget in self.container.winfo_children():
+            widget.destroy()
+
+    def show_prereq_screen(self):
+        self.clear()
+        git_ok = check_git()
+        python_ok = check_python_version()
+        floor_str = ".".join(map(str, PYTHON_VERSION_FLOOR))
+        tk.Label(
+            self.container, text="Checking prerequisites...", font=("", 14, "bold")
+        ).pack(anchor="w")
+        tk.Label(
+            self.container,
+            text=("git: OK" if git_ok else "git: NOT FOUND - install from git-scm.com"),
+            fg="green" if git_ok else "red",
+        ).pack(anchor="w", pady=4)
+        tk.Label(
+            self.container,
+            text=(
+                f"Python {floor_str}+: OK" if python_ok
+                else f"Python {floor_str}+ required, found "
+                     f"{sys.version_info.major}.{sys.version_info.minor}"
+            ),
+            fg="green" if python_ok else "red",
+        ).pack(anchor="w", pady=4)
+        tk.Button(
+            self.container, text="Next", command=self.show_destination_screen,
+            state="normal" if can_proceed(git_ok, python_ok) else "disabled",
+        ).pack(anchor="e", pady=16)
+
+    def show_destination_screen(self):
+        self.clear()
+        tk.Label(
+            self.container, text="Choose install location", font=("", 14, "bold")
+        ).pack(anchor="w")
+        tk.Label(self.container, text="Repository URL:").pack(anchor="w", pady=(12, 0))
+        tk.Entry(self.container, textvariable=self.url_var, width=60).pack(anchor="w")
+        tk.Label(self.container, text="Install to folder:").pack(anchor="w", pady=(12, 0))
+        row = tk.Frame(self.container)
+        row.pack(anchor="w", fill="x")
+        tk.Entry(row, textvariable=self.dest_var, width=48).pack(side="left")
+        tk.Button(row, text="Browse...", command=self.browse_destination).pack(
+            side="left", padx=8
+        )
+        tk.Button(
+            self.container, text="Install", command=self.start_install
+        ).pack(anchor="e", pady=16)
+
+    def browse_destination(self):
+        chosen = filedialog.askdirectory()
+        if chosen:
+            self.dest_var.set(str(Path(chosen) / "EEGAnalyze"))
+
+    def start_install(self):
+        dest = Path(self.dest_var.get())
+        url = self.url_var.get()
+        if not destination_is_safe(dest):
+            proceed = messagebox.askyesno(
+                "Folder not empty",
+                f"{dest} already exists and is not empty. Continue anyway?",
+            )
+            if not proceed:
+                return
+        self.show_progress_screen()
+        thread = threading.Thread(
+            target=self.run_install_thread, args=(url, dest), daemon=True
+        )
+        thread.start()
+
+    def show_progress_screen(self):
+        self.clear()
+        tk.Label(
+            self.container, text="Installing...", font=("", 14, "bold")
+        ).pack(anchor="w")
+        self.log_text = tk.Text(self.container, height=20, width=76)
+        self.log_text.pack(pady=8)
+        self.log_text.config(state="disabled")
+
+    def append_log(self, line: str):
+        def do_append():
+            self.log_text.config(state="normal")
+            self.log_text.insert("end", line + "\n")
+            self.log_text.see("end")
+            self.log_text.config(state="disabled")
+        self.root.after(0, do_append)
+
+    def run_install_thread(self, url: str, dest: Path):
+        dest.mkdir(parents=True, exist_ok=True)
+        ok = run_setup(url, dest, self.append_log)
+        if ok:
+            write_start_scripts(dest)
+            self.append_log("Start scripts written.")
+            try:
+                created = create_shortcuts(dest)
+                self.append_log(
+                    "Shortcuts created: " + ", ".join(str(p) for p in created)
+                )
+            except Exception as exc:
+                self.append_log(f"Shortcut creation failed (non-fatal): {exc}")
+        self.root.after(0, lambda: self.show_done_screen(dest, ok))
+
+    def show_done_screen(self, dest: Path, success: bool):
+        self.clear()
+        if success:
+            tk.Label(
+                self.container, text="Setup complete!", font=("", 14, "bold"),
+                fg="green",
+            ).pack(anchor="w")
+            tk.Label(
+                self.container,
+                text=(
+                    f"Installed to: {dest}\n"
+                    "A shortcut was created - right-click it and choose "
+                    "'Pin to taskbar' / 'Pin to Dock' / 'Add to Favorites' "
+                    "if you want quick access."
+                ),
+                justify="left",
+            ).pack(anchor="w", pady=8)
+            tk.Button(
+                self.container, text="Launch now",
+                command=lambda: self.launch(dest),
+            ).pack(anchor="e", pady=16)
+        else:
+            tk.Label(
+                self.container, text="Setup failed.", font=("", 14, "bold"),
+                fg="red",
+            ).pack(anchor="w")
+            tk.Label(
+                self.container,
+                text="See the log on the previous screen for details.",
+            ).pack(anchor="w", pady=8)
+
+    def launch(self, dest: Path):
+        if detect_os() == "windows":
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", str(dest / "start.bat")], shell=False
+            )
+        else:
+            subprocess.Popen(["bash", str(dest / "start.sh")])
+        self.root.destroy()
+
+
+def main():
+    root = tk.Tk()
+    InstallerApp(root)
+    root.mainloop()
+
+
 if __name__ == "__main__":
-    print("install.py: GUI not wired up yet (see later tasks in the plan).")
+    main()
