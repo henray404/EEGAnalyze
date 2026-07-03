@@ -1,4 +1,6 @@
+import os
 import platform
+import stat
 import sys
 from pathlib import Path
 
@@ -143,11 +145,6 @@ def test_windows_shortcut_vbscript(tmp_path):
     assert "oLink.Save" in content
 
 
-import os
-import stat
-import sys
-
-
 def test_write_start_scripts_creates_both_files(tmp_path):
     install.write_start_scripts(tmp_path)
     bat = tmp_path / "start.bat"
@@ -215,13 +212,26 @@ def test_create_linux_desktop_entry_skips_desktop_copy_if_no_desktop_dir(tmp_pat
     assert len(created) == 1
 
 
-import sys
-
-
 def test_clone_command():
     dest = Path("/tmp/EEGAnalyze")
     cmd = install.clone_command("https://example.com/repo.git", dest)
-    assert cmd == ["git", "clone", "https://example.com/repo.git", str(dest)]
+    # "--" before the URL stops git from treating a leading-dash URL as a flag.
+    assert cmd == ["git", "clone", "--", "https://example.com/repo.git", str(dest)]
+
+
+def test_pull_command():
+    dest = Path("/tmp/EEGAnalyze")
+    cmd = install.pull_command(dest)
+    assert cmd == ["git", "-C", str(dest), "pull"]
+
+
+def test_is_existing_clone_false_for_new_dir(tmp_path):
+    assert install.is_existing_clone(tmp_path) is False
+
+
+def test_is_existing_clone_true_when_git_dir_present(tmp_path):
+    (tmp_path / ".git").mkdir()
+    assert install.is_existing_clone(tmp_path) is True
 
 
 def test_venv_command():
@@ -298,3 +308,19 @@ def test_run_setup_all_succeed(monkeypatch, tmp_path):
     assert result is True
     assert len(calls) == 3
     assert any("complete" in line.lower() for line in lines)
+
+
+def test_run_setup_pulls_instead_of_cloning_for_existing_install(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_run(cmd, on_line):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(install, "run_command_streaming", fake_run)
+    lines = []
+    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
+    assert result is True
+    assert calls[0] == install.pull_command(tmp_path)
+    assert any("pull" in line.lower() for line in lines)

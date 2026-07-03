@@ -194,7 +194,8 @@ def create_windows_shortcut(target: Path, shortcut_path: Path, description: str)
         vbs_path = f.name
     try:
         subprocess.run(
-            ["cscript", "//nologo", vbs_path], check=True, capture_output=True
+            ["cscript", "//nologo", vbs_path],
+            check=True, capture_output=True, text=True,
         )
     finally:
         os.unlink(vbs_path)
@@ -255,7 +256,16 @@ def create_shortcuts(dest: Path) -> list[Path]:
 # --------------------------------------------------------------------- #
 
 def clone_command(url: str, dest: Path) -> list[str]:
-    return ["git", "clone", url, str(dest)]
+    # "--" stops git from ever interpreting a URL starting with "-" as a flag.
+    return ["git", "clone", "--", url, str(dest)]
+
+
+def pull_command(dest: Path) -> list[str]:
+    return ["git", "-C", str(dest), "pull"]
+
+
+def is_existing_clone(dest: Path) -> bool:
+    return (dest / ".git").exists()
 
 
 def venv_command(dest: Path) -> list[str]:
@@ -283,14 +293,22 @@ def run_command_streaming(cmd: list[str], on_line) -> int:
 
 
 def run_setup(url: str, dest: Path, on_line) -> bool:
-    """Clone repo, create venv, install backend deps. Returns True only if
-    all three steps succeed. Calls on_line(str) with progress as it happens.
+    """Clone repo (or pull latest if dest is already a clone), create venv,
+    install backend deps. Returns True only if all steps succeed. Calls
+    on_line(str) with progress as it happens.
     """
-    on_line("Cloning repository...")
-    code = run_command_streaming(clone_command(url, dest), on_line)
-    if code != 0:
-        on_line(f"FAILED (exit code {code}) cloning repository")
-        return False
+    if is_existing_clone(dest):
+        on_line("Existing installation found, pulling latest changes...")
+        code = run_command_streaming(pull_command(dest), on_line)
+        if code != 0:
+            on_line(f"FAILED (exit code {code}) pulling latest changes")
+            return False
+    else:
+        on_line("Cloning repository...")
+        code = run_command_streaming(clone_command(url, dest), on_line)
+        if code != 0:
+            on_line(f"FAILED (exit code {code}) cloning repository")
+            return False
 
     on_line("Creating Python virtual environment...")
     code = run_command_streaming(venv_command(dest), on_line)
@@ -381,13 +399,17 @@ class InstallerApp:
     def start_install(self):
         dest = Path(self.dest_var.get())
         url = self.url_var.get()
-        if not destination_is_safe(dest):
-            proceed = messagebox.askyesno(
+        # git clone always refuses a non-empty destination, so "continue
+        # anyway" into one can never actually succeed. Only two folder
+        # states can proceed: empty/new (clone), or an existing install of
+        # this tool (update via git pull, handled in run_setup).
+        if not is_existing_clone(dest) and not destination_is_safe(dest):
+            messagebox.showerror(
                 "Folder not empty",
-                f"{dest} already exists and is not empty. Continue anyway?",
+                f"{dest} already exists and is not empty, and isn't a "
+                "previous install of this tool. Pick an empty or new folder.",
             )
-            if not proceed:
-                return
+            return
         self.show_progress_screen()
         thread = threading.Thread(
             target=self.run_install_thread, args=(url, dest), daemon=True
@@ -422,6 +444,9 @@ class InstallerApp:
                 self.append_log(
                     "Shortcuts created: " + ", ".join(str(p) for p in created)
                 )
+            except subprocess.CalledProcessError as exc:
+                detail = exc.stderr.strip() if exc.stderr else str(exc)
+                self.append_log(f"Shortcut creation failed (non-fatal): {detail}")
             except Exception as exc:
                 self.append_log(f"Shortcut creation failed (non-fatal): {exc}")
         self.root.after(0, lambda: self.show_done_screen(dest, ok))
