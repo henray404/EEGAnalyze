@@ -279,7 +279,10 @@ def pip_install_command(dest: Path) -> list[str]:
     ]
 
 
-def run_command_streaming(cmd: list[str], on_line, heartbeat_interval: float = 15.0) -> int:
+def run_command_streaming(
+    cmd: list[str], on_line, heartbeat_interval: float = 15.0,
+    heartbeat_message: str = "... still working ...",
+) -> int:
     """Run cmd, calling on_line(str) for each stdout/stderr line as it
     arrives. Returns the process's exit code.
 
@@ -288,9 +291,11 @@ def run_command_streaming(cmd: list[str], on_line, heartbeat_interval: float = 1
     extracting many wheels is silent by default. Without a heartbeat that
     looks indistinguishable from a hang, and a stalled/impatiently-retried
     install is exactly what looks like an "install loop" from the outside.
-    A background thread emits a heartbeat line if heartbeat_interval
+    A background thread emits heartbeat_message if heartbeat_interval
     elapses with no real output, so silence never means "nothing is
-    happening" from the log's perspective.
+    happening" from the log's perspective. Callers pass a message naming
+    the specific step (see run_setup) so a stuck-looking silence also says
+    what's actually slow, not just that something is.
     """
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -300,7 +305,7 @@ def run_command_streaming(cmd: list[str], on_line, heartbeat_interval: float = 1
 
     def heartbeat():
         while not stop_heartbeat.wait(heartbeat_interval):
-            on_line("... still working ...")
+            on_line(heartbeat_message)
 
     hb_thread = threading.Thread(target=heartbeat, daemon=True)
     hb_thread.start()
@@ -320,25 +325,37 @@ def run_setup(url: str, dest: Path, on_line) -> bool:
     """
     if is_existing_clone(dest):
         on_line("Existing installation found, pulling latest changes...")
-        code = run_command_streaming(pull_command(dest), on_line)
+        code = run_command_streaming(
+            pull_command(dest), on_line,
+            heartbeat_message="... still pulling latest changes ...",
+        )
         if code != 0:
             on_line(f"FAILED (exit code {code}) pulling latest changes")
             return False
     else:
         on_line("Cloning repository...")
-        code = run_command_streaming(clone_command(url, dest), on_line)
+        code = run_command_streaming(
+            clone_command(url, dest), on_line,
+            heartbeat_message="... still cloning repository ...",
+        )
         if code != 0:
             on_line(f"FAILED (exit code {code}) cloning repository")
             return False
 
     on_line("Creating Python virtual environment...")
-    code = run_command_streaming(venv_command(dest), on_line)
+    code = run_command_streaming(
+        venv_command(dest), on_line,
+        heartbeat_message="... still creating virtual environment ...",
+    )
     if code != 0:
         on_line(f"FAILED (exit code {code}) creating virtual environment")
         return False
 
     on_line("Installing backend dependencies...")
-    code = run_command_streaming(pip_install_command(dest), on_line)
+    code = run_command_streaming(
+        pip_install_command(dest), on_line,
+        heartbeat_message="... still installing dependencies (this can take a few minutes) ...",
+    )
     if code != 0:
         on_line(f"FAILED (exit code {code}) installing dependencies")
         return False

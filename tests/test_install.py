@@ -297,10 +297,22 @@ def test_run_command_streaming_no_heartbeat_when_output_is_fast():
     assert lines == ["a", "b"]
 
 
+def test_run_command_streaming_heartbeat_message_is_customizable():
+    lines = []
+    code = install.run_command_streaming(
+        [sys.executable, "-c", "import time; time.sleep(0.3); print('done')"],
+        lines.append,
+        heartbeat_interval=0.05,
+        heartbeat_message="... still creating virtual environment ...",
+    )
+    assert code == 0
+    assert any(line == "... still creating virtual environment ..." for line in lines)
+
+
 def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
     calls = []
 
-    def fake_run(cmd, on_line):
+    def fake_run(cmd, on_line, **kwargs):
         calls.append(cmd)
         return 1  # simulate failure on every call
 
@@ -315,7 +327,7 @@ def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
 def test_run_setup_stops_after_venv_failure(monkeypatch, tmp_path):
     calls = []
 
-    def fake_run(cmd, on_line):
+    def fake_run(cmd, on_line, **kwargs):
         calls.append(cmd)
         return 0 if len(calls) == 1 else 1  # clone succeeds, venv fails
 
@@ -329,7 +341,7 @@ def test_run_setup_stops_after_venv_failure(monkeypatch, tmp_path):
 def test_run_setup_all_succeed(monkeypatch, tmp_path):
     calls = []
 
-    def fake_run(cmd, on_line):
+    def fake_run(cmd, on_line, **kwargs):
         calls.append(cmd)
         return 0
 
@@ -341,11 +353,30 @@ def test_run_setup_all_succeed(monkeypatch, tmp_path):
     assert any("complete" in line.lower() for line in lines)
 
 
+def test_run_setup_uses_distinct_heartbeat_message_per_step(monkeypatch, tmp_path):
+    heartbeat_messages = []
+
+    def fake_run(cmd, on_line, **kwargs):
+        heartbeat_messages.append(kwargs.get("heartbeat_message"))
+        return 0
+
+    monkeypatch.setattr(install, "run_command_streaming", fake_run)
+    install.run_setup("https://example.com/repo.git", tmp_path, lambda line: None)
+    # clone, venv, pip - each step's heartbeat should name that step, not a
+    # generic message, so a stuck-looking silence says what's actually slow.
+    assert len(heartbeat_messages) == 3
+    assert all(heartbeat_messages)  # none blank/None
+    assert len(set(heartbeat_messages)) == 3  # all three distinct
+    assert "clon" in heartbeat_messages[0].lower()
+    assert "virtual environment" in heartbeat_messages[1].lower()
+    assert "depend" in heartbeat_messages[2].lower()
+
+
 def test_run_setup_pulls_instead_of_cloning_for_existing_install(monkeypatch, tmp_path):
     (tmp_path / ".git").mkdir()
     calls = []
 
-    def fake_run(cmd, on_line):
+    def fake_run(cmd, on_line, **kwargs):
         calls.append(cmd)
         return 0
 
