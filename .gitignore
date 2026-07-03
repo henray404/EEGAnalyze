@@ -63,3 +63,6 @@ results.bin
 
 
 frontend/
+
+# Subagent-driven-development scratch (progress ledger, task briefs/reports)
+.superpowers/
