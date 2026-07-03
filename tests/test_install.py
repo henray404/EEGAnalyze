@@ -266,6 +266,37 @@ def test_run_command_streaming_captures_nonzero_exit_code():
     assert code == 3
 
 
+def test_run_command_streaming_emits_heartbeat_during_silent_stretch():
+    # Simulates pip's silent "Installing collected packages" phase: a
+    # subprocess that produces no output for a while before finishing.
+    # A short heartbeat_interval keeps this test fast (real usage defaults
+    # to a much longer interval - see run_setup's callers).
+    lines = []
+    code = install.run_command_streaming(
+        [sys.executable, "-c", "import time; time.sleep(0.3); print('done')"],
+        lines.append,
+        heartbeat_interval=0.05,
+    )
+    assert code == 0
+    assert "done" in lines  # real output still arrives
+    # At least one heartbeat fired during the silent stretch before it.
+    # (Not asserting exact position: a heartbeat tick can legitimately
+    # race the final line's arrival, since it's a genuinely concurrent
+    # background thread - both landing is what matters, not their order.)
+    assert any(line == "... still working ..." for line in lines)
+
+
+def test_run_command_streaming_no_heartbeat_when_output_is_fast():
+    lines = []
+    code = install.run_command_streaming(
+        [sys.executable, "-c", "print('a'); print('b')"],
+        lines.append,
+        heartbeat_interval=15.0,
+    )
+    assert code == 0
+    assert lines == ["a", "b"]
+
+
 def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
     calls = []
 

@@ -279,15 +279,36 @@ def pip_install_command(dest: Path) -> list[str]:
     ]
 
 
-def run_command_streaming(cmd: list[str], on_line) -> int:
+def run_command_streaming(cmd: list[str], on_line, heartbeat_interval: float = 15.0) -> int:
     """Run cmd, calling on_line(str) for each stdout/stderr line as it
-    arrives. Returns the process's exit code."""
+    arrives. Returns the process's exit code.
+
+    Some commands (pip's "Installing collected packages" step in
+    particular) produce zero output for minutes while genuinely working -
+    extracting many wheels is silent by default. Without a heartbeat that
+    looks indistinguishable from a hang, and a stalled/impatiently-retried
+    install is exactly what looks like an "install loop" from the outside.
+    A background thread emits a heartbeat line if heartbeat_interval
+    elapses with no real output, so silence never means "nothing is
+    happening" from the log's perspective.
+    """
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
     )
-    for line in process.stdout:
-        on_line(line.rstrip("\n"))
+    stop_heartbeat = threading.Event()
+
+    def heartbeat():
+        while not stop_heartbeat.wait(heartbeat_interval):
+            on_line("... still working ...")
+
+    hb_thread = threading.Thread(target=heartbeat, daemon=True)
+    hb_thread.start()
+    try:
+        for line in process.stdout:
+            on_line(line.rstrip("\n"))
+    finally:
+        stop_heartbeat.set()
     process.wait()
     return process.returncode
 
