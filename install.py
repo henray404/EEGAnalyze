@@ -237,5 +237,63 @@ def create_shortcuts(dest: Path) -> list[Path]:
     return create_linux_desktop_entry(dest)
 
 
+# --------------------------------------------------------------------- #
+#  git clone / venv / pip install orchestration
+# --------------------------------------------------------------------- #
+
+def clone_command(url: str, dest: Path) -> list[str]:
+    return ["git", "clone", url, str(dest)]
+
+
+def venv_command(dest: Path) -> list[str]:
+    return [sys.executable, "-m", "venv", str(venv_dir(dest))]
+
+
+def pip_install_command(dest: Path) -> list[str]:
+    return [
+        str(venv_pip(dest)), "install", "-r",
+        str(dest / "backend" / "requirements.txt"),
+    ]
+
+
+def run_command_streaming(cmd: list[str], on_line) -> int:
+    """Run cmd, calling on_line(str) for each stdout/stderr line as it
+    arrives. Returns the process's exit code."""
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    for line in process.stdout:
+        on_line(line.rstrip("\n"))
+    process.wait()
+    return process.returncode
+
+
+def run_setup(url: str, dest: Path, on_line) -> bool:
+    """Clone repo, create venv, install backend deps. Returns True only if
+    all three steps succeed. Calls on_line(str) with progress as it happens.
+    """
+    on_line("Cloning repository...")
+    code = run_command_streaming(clone_command(url, dest), on_line)
+    if code != 0:
+        on_line(f"FAILED (exit code {code}) cloning repository")
+        return False
+
+    on_line("Creating Python virtual environment...")
+    code = run_command_streaming(venv_command(dest), on_line)
+    if code != 0:
+        on_line(f"FAILED (exit code {code}) creating virtual environment")
+        return False
+
+    on_line("Installing backend dependencies...")
+    code = run_command_streaming(pip_install_command(dest), on_line)
+    if code != 0:
+        on_line(f"FAILED (exit code {code}) installing dependencies")
+        return False
+
+    on_line("Setup complete.")
+    return True
+
+
 if __name__ == "__main__":
     print("install.py: GUI not wired up yet (see later tasks in the plan).")

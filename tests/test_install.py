@@ -213,3 +213,88 @@ def test_create_linux_desktop_entry_skips_desktop_copy_if_no_desktop_dir(tmp_pat
     dest = tmp_path / "EEGAnalyze"
     created = install.create_linux_desktop_entry(dest)
     assert len(created) == 1
+
+
+import sys
+
+
+def test_clone_command():
+    dest = Path("/tmp/EEGAnalyze")
+    cmd = install.clone_command("https://example.com/repo.git", dest)
+    assert cmd == ["git", "clone", "https://example.com/repo.git", str(dest)]
+
+
+def test_venv_command():
+    dest = Path("/tmp/EEGAnalyze")
+    cmd = install.venv_command(dest)
+    assert cmd == [sys.executable, "-m", "venv", str(install.venv_dir(dest))]
+
+
+def test_pip_install_command():
+    dest = Path("/tmp/EEGAnalyze")
+    cmd = install.pip_install_command(dest)
+    assert cmd == [
+        str(install.venv_pip(dest)), "install", "-r",
+        str(dest / "backend" / "requirements.txt"),
+    ]
+
+
+def test_run_command_streaming_captures_output_and_exit_code():
+    lines = []
+    code = install.run_command_streaming(
+        [sys.executable, "-c", "print('a'); print('b')"], lines.append
+    )
+    assert code == 0
+    assert lines == ["a", "b"]
+
+
+def test_run_command_streaming_captures_nonzero_exit_code():
+    lines = []
+    code = install.run_command_streaming(
+        [sys.executable, "-c", "import sys; sys.exit(3)"], lines.append
+    )
+    assert code == 3
+
+
+def test_run_setup_stops_after_clone_failure(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, on_line):
+        calls.append(cmd)
+        return 1  # simulate failure on every call
+
+    monkeypatch.setattr(install, "run_command_streaming", fake_run)
+    lines = []
+    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
+    assert result is False
+    assert len(calls) == 1  # only clone attempted; venv/pip never ran
+    assert any("FAILED" in line for line in lines)
+
+
+def test_run_setup_stops_after_venv_failure(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, on_line):
+        calls.append(cmd)
+        return 0 if len(calls) == 1 else 1  # clone succeeds, venv fails
+
+    monkeypatch.setattr(install, "run_command_streaming", fake_run)
+    lines = []
+    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
+    assert result is False
+    assert len(calls) == 2  # clone + venv attempted; pip never ran
+
+
+def test_run_setup_all_succeed(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, on_line):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(install, "run_command_streaming", fake_run)
+    lines = []
+    result = install.run_setup("https://example.com/repo.git", tmp_path, lines.append)
+    assert result is True
+    assert len(calls) == 3
+    assert any("complete" in line.lower() for line in lines)
