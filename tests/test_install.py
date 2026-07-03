@@ -97,3 +97,47 @@ def test_destination_is_safe_nonempty_dir(tmp_path):
     dest.mkdir()
     (dest / "somefile.txt").write_text("hi")
     assert install.destination_is_safe(dest) is False
+
+
+def test_start_bat_content_launches_both_servers_and_browser():
+    content = install.start_bat_content()
+    assert "backend\\.venv\\Scripts\\python.exe" in content
+    assert "-m uvicorn app.main:app --app-dir backend --port 8000" in content
+    assert "-m http.server 5173 --directory frontend_v2" in content
+    assert "start http://localhost:5173" in content
+
+
+def test_start_sh_content_launches_both_servers_and_browser():
+    content = install.start_sh_content()
+    assert "backend/.venv/bin/python" in content
+    assert "-m uvicorn app.main:app --app-dir backend --port 8000" in content
+    assert "-m http.server 5173 --directory frontend_v2" in content
+    assert "http://localhost:5173" in content
+    assert content.startswith("#!/bin/bash\n")
+
+
+def test_desktop_entry_content(tmp_path):
+    dest = tmp_path / "EEGAnalyze"
+    content = install.desktop_entry_content(dest)
+    assert "[Desktop Entry]" in content
+    assert "Name=EEG Analysis Tool" in content
+    assert str(dest / "start.sh") in content
+
+
+def test_command_launcher_content(tmp_path):
+    dest = tmp_path / "EEGAnalyze"
+    content = install.command_launcher_content(dest)
+    assert content.startswith("#!/bin/bash\n")
+    assert str(dest) in content
+    assert str(dest / "start.sh") in content
+
+
+def test_windows_shortcut_vbscript(tmp_path):
+    target = tmp_path / "EEGAnalyze" / "start.bat"
+    shortcut = tmp_path / "Desktop" / "EEG Analysis Tool.lnk"
+    content = install.windows_shortcut_vbscript(target, shortcut, "Launch EEG Analysis Tool")
+    assert 'WScript.CreateObject("WScript.Shell")' in content
+    assert str(target) in content
+    assert str(shortcut) in content
+    assert "Launch EEG Analysis Tool" in content
+    assert "oLink.Save" in content
