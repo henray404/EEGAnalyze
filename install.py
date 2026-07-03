@@ -2,13 +2,10 @@
 
 Run with: python install.py
 
-Clones the EEG Analysis Tool repo and creates OS-appropriate shortcuts
-pointing at its own start.bat/start.sh (both already checked into the repo,
-alongside launcher.py, which owns venv setup / dependency install / actually
-starting the app on first run). This installer's only job is "get a copy
-onto this machine" - everything after that is launcher.py's job, so there's
-one venv location and one setup flow, not two competing ones. Stdlib only -
-no pip install needed to run this file itself.
+Clones the EEG Analysis Tool repo, sets up the backend Python virtual
+environment, generates start.bat/start.sh launch scripts, and creates
+OS-appropriate shortcuts. Stdlib only - no pip install needed to run this
+file itself.
 """
 
 import os
@@ -56,6 +53,22 @@ def default_destination() -> Path:
     return Path.home() / "EEGAnalyze"
 
 
+def venv_dir(dest: Path) -> Path:
+    return dest / "backend" / ".venv"
+
+
+def venv_python(dest: Path) -> Path:
+    if detect_os() == "windows":
+        return venv_dir(dest) / "Scripts" / "python.exe"
+    return venv_dir(dest) / "bin" / "python"
+
+
+def venv_pip(dest: Path) -> Path:
+    if detect_os() == "windows":
+        return venv_dir(dest) / "Scripts" / "pip.exe"
+    return venv_dir(dest) / "bin" / "pip"
+
+
 def check_git() -> bool:
     return shutil.which("git") is not None
 
@@ -79,10 +92,40 @@ def destination_is_safe(dest: Path) -> bool:
 # --------------------------------------------------------------------- #
 #  Generated file content (pure string templates)
 # --------------------------------------------------------------------- #
-#  start.bat/start.sh are NOT generated here - they're already checked
-#  into the repo (alongside launcher.py) and arrive with the clone. Only
-#  OS-native shortcut/launcher content is generated, all pointing at
-#  those existing files.
+
+def start_bat_content() -> str:
+    return (
+        "@echo off\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "set VENV_PY=backend\\.venv\\Scripts\\python.exe\r\n"
+        "start \"EEG Backend\" cmd /k \"%VENV_PY%\" -m uvicorn app.main:app "
+        "--app-dir backend --port 8000\r\n"
+        "start \"EEG Frontend\" cmd /k \"%VENV_PY%\" -m http.server 5173 "
+        "--directory frontend_v2\r\n"
+        "timeout /t 2 /nobreak >nul\r\n"
+        "start http://localhost:5173\r\n"
+    )
+
+
+def start_sh_content() -> str:
+    return (
+        "#!/bin/bash\n"
+        "cd \"$(dirname \"$0\")\"\n"
+        "VENV_PY=\"backend/.venv/bin/python\"\n"
+        "\"$VENV_PY\" -m uvicorn app.main:app --app-dir backend --port 8000 &\n"
+        "BACKEND_PID=$!\n"
+        "\"$VENV_PY\" -m http.server 5173 --directory frontend_v2 &\n"
+        "FRONTEND_PID=$!\n"
+        "sleep 2\n"
+        "if command -v xdg-open >/dev/null 2>&1; then\n"
+        "    xdg-open http://localhost:5173\n"
+        "elif command -v open >/dev/null 2>&1; then\n"
+        "    open http://localhost:5173\n"
+        "fi\n"
+        "trap \"kill $BACKEND_PID $FRONTEND_PID\" EXIT\n"
+        "wait\n"
+    )
+
 
 def desktop_entry_content(dest: Path) -> str:
     start_sh = dest / "start.sh"
@@ -130,12 +173,16 @@ def _make_executable(path: Path) -> None:
     os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def ensure_start_sh_executable(dest: Path) -> None:
-    """git preserves the exec bit from the commit, but make sure - a
-    checkout coming from a Windows-authored commit could lose it."""
+def write_start_scripts(dest: Path) -> None:
+    # write_bytes (not write_text): start_bat_content()/start_sh_content()
+    # embed explicit line endings (\r\n / \n). Path.write_text() applies
+    # its own newline translation on top of that and corrupts \r\n into
+    # \r\r\n on Windows. Writing raw bytes preserves them exactly.
+    bat_path = dest / "start.bat"
     sh_path = dest / "start.sh"
-    if sh_path.exists():
-        _make_executable(sh_path)
+    bat_path.write_bytes(start_bat_content().encode("utf-8"))
+    sh_path.write_bytes(start_sh_content().encode("utf-8"))
+    _make_executable(sh_path)
 
 
 def create_windows_shortcut(target: Path, shortcut_path: Path, description: str) -> None:
@@ -221,6 +268,17 @@ def is_existing_clone(dest: Path) -> bool:
     return (dest / ".git").exists()
 
 
+def venv_command(dest: Path) -> list[str]:
+    return [sys.executable, "-m", "venv", str(venv_dir(dest))]
+
+
+def pip_install_command(dest: Path) -> list[str]:
+    return [
+        str(venv_pip(dest)), "install", "-r",
+        str(dest / "backend" / "requirements.txt"),
+    ]
+
+
 def run_command_streaming(cmd: list[str], on_line) -> int:
     """Run cmd, calling on_line(str) for each stdout/stderr line as it
     arrives. Returns the process's exit code."""
@@ -235,13 +293,9 @@ def run_command_streaming(cmd: list[str], on_line) -> int:
 
 
 def run_setup(url: str, dest: Path, on_line) -> bool:
-    """Clone repo, or pull latest if dest is already a clone. Returns True
-    on success. Calls on_line(str) with progress as it happens.
-
-    Deliberately stops here - venv setup, dependency install, and actually
-    starting the app are launcher.py's job (already checked into the repo),
-    not this installer's. Doing it in both places means two venvs in two
-    different locations fighting each other; see start.bat/start.sh.
+    """Clone repo (or pull latest if dest is already a clone), create venv,
+    install backend deps. Returns True only if all steps succeed. Calls
+    on_line(str) with progress as it happens.
     """
     if is_existing_clone(dest):
         on_line("Existing installation found, pulling latest changes...")
@@ -256,7 +310,19 @@ def run_setup(url: str, dest: Path, on_line) -> bool:
             on_line(f"FAILED (exit code {code}) cloning repository")
             return False
 
-    on_line("Clone complete.")
+    on_line("Creating Python virtual environment...")
+    code = run_command_streaming(venv_command(dest), on_line)
+    if code != 0:
+        on_line(f"FAILED (exit code {code}) creating virtual environment")
+        return False
+
+    on_line("Installing backend dependencies...")
+    code = run_command_streaming(pip_install_command(dest), on_line)
+    if code != 0:
+        on_line(f"FAILED (exit code {code}) installing dependencies")
+        return False
+
+    on_line("Setup complete.")
     return True
 
 
@@ -371,7 +437,8 @@ class InstallerApp:
         dest.mkdir(parents=True, exist_ok=True)
         ok = run_setup(url, dest, self.append_log)
         if ok:
-            ensure_start_sh_executable(dest)
+            write_start_scripts(dest)
+            self.append_log("Start scripts written.")
             try:
                 created = create_shortcuts(dest)
                 self.append_log(
@@ -416,13 +483,12 @@ class InstallerApp:
             ).pack(anchor="w", pady=8)
 
     def launch(self, dest: Path):
-        # cwd=str(dest) is required: start.bat has no "cd /d %~dp0" of its
-        # own (it only works by accident when double-clicked directly, since
-        # Explorer sets the CWD for you). Launched via subprocess like this,
-        # it would otherwise inherit the installer .exe's own CWD - wherever
-        # the user happened to save/run it from - and "pythonw launcher.py"
-        # silently fails to find launcher.py there (pythonw has no console
-        # to show the error, so it just does nothing).
+        # start.bat already has "cd /d %~dp0" and uses the explicit venv
+        # python path (backend\.venv\Scripts\python.exe), not a bare
+        # "python"/"pythonw" PATH lookup - so it isn't affected by whichever
+        # Python happens to resolve first on PATH (e.g. a uv-managed
+        # install with broken Tcl/Tk). cwd=str(dest) is still set here as
+        # defense-in-depth, cheap and correct regardless.
         if detect_os() == "windows":
             subprocess.Popen(
                 ["cmd", "/c", "start", "", str(dest / "start.bat")],
