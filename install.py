@@ -151,5 +151,91 @@ def windows_shortcut_vbscript(
     )
 
 
+# --------------------------------------------------------------------- #
+#  Writing generated files / creating shortcuts (side effects)
+# --------------------------------------------------------------------- #
+
+def _make_executable(path: Path) -> None:
+    st = os.stat(path)
+    os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def write_start_scripts(dest: Path) -> None:
+    # write_bytes (not write_text): start_bat_content()/start_sh_content()
+    # embed explicit line endings (\r\n / \n). Path.write_text() applies
+    # its own newline translation on top of that and corrupts \r\n into
+    # \r\r\n on Windows. Writing raw bytes preserves them exactly.
+    bat_path = dest / "start.bat"
+    sh_path = dest / "start.sh"
+    bat_path.write_bytes(start_bat_content().encode("utf-8"))
+    sh_path.write_bytes(start_sh_content().encode("utf-8"))
+    _make_executable(sh_path)
+
+
+def create_windows_shortcut(target: Path, shortcut_path: Path, description: str) -> None:
+    vbs_content = windows_shortcut_vbscript(target, shortcut_path, description)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vbs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(vbs_content)
+        vbs_path = f.name
+    try:
+        subprocess.run(
+            ["cscript", "//nologo", vbs_path], check=True, capture_output=True
+        )
+    finally:
+        os.unlink(vbs_path)
+
+
+def create_windows_shortcuts(dest: Path) -> list[Path]:
+    """Create Start Menu + Desktop shortcuts pointing at start.bat."""
+    target = dest / "start.bat"
+    start_menu = (
+        Path(os.environ["APPDATA"]) / "Microsoft" / "Windows"
+        / "Start Menu" / "Programs" / "EEG Analysis Tool.lnk"
+    )
+    desktop = Path.home() / "Desktop" / "EEG Analysis Tool.lnk"
+    created = []
+    for shortcut_path in (start_menu, desktop):
+        shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+        create_windows_shortcut(target, shortcut_path, "Launch EEG Analysis Tool")
+        created.append(shortcut_path)
+    return created
+
+
+def create_mac_launcher(dest: Path) -> Path:
+    launcher_path = dest / "EEG Analysis Tool.command"
+    launcher_path.write_bytes(command_launcher_content(dest).encode("utf-8"))
+    _make_executable(launcher_path)
+    return launcher_path
+
+
+def create_linux_desktop_entry(dest: Path) -> list[Path]:
+    content = desktop_entry_content(dest)
+    content_bytes = content.encode("utf-8")
+    apps_dir = Path.home() / ".local" / "share" / "applications"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    entry_path = apps_dir / "eeg-analysis-tool.desktop"
+    entry_path.write_bytes(content_bytes)
+    _make_executable(entry_path)
+    created = [entry_path]
+    desktop_dir = Path.home() / "Desktop"
+    if desktop_dir.exists():
+        desktop_copy = desktop_dir / "eeg-analysis-tool.desktop"
+        desktop_copy.write_bytes(content_bytes)
+        _make_executable(desktop_copy)
+        created.append(desktop_copy)
+    return created
+
+
+def create_shortcuts(dest: Path) -> list[Path]:
+    os_name = detect_os()
+    if os_name == "windows":
+        return create_windows_shortcuts(dest)
+    if os_name == "mac":
+        return [create_mac_launcher(dest)]
+    return create_linux_desktop_entry(dest)
+
+
 if __name__ == "__main__":
     print("install.py: GUI not wired up yet (see later tasks in the plan).")

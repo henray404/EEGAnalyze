@@ -141,3 +141,75 @@ def test_windows_shortcut_vbscript(tmp_path):
     assert str(shortcut) in content
     assert "Launch EEG Analysis Tool" in content
     assert "oLink.Save" in content
+
+
+import os
+import stat
+import sys
+
+
+def test_write_start_scripts_creates_both_files(tmp_path):
+    install.write_start_scripts(tmp_path)
+    bat = tmp_path / "start.bat"
+    sh = tmp_path / "start.sh"
+    # Compare raw bytes, not text-mode read: start_bat_content() embeds
+    # literal \r\n and text-mode read_text() would normalize newlines on
+    # the way in, masking a write-side CRLF corruption bug.
+    assert bat.read_bytes().decode("utf-8") == install.start_bat_content()
+    assert sh.read_bytes().decode("utf-8") == install.start_sh_content()
+
+
+def test_write_start_scripts_makes_sh_executable(tmp_path):
+    install.write_start_scripts(tmp_path)
+    sh = tmp_path / "start.sh"
+    if sys.platform == "win32":
+        # Windows has no POSIX exec-bit concept for arbitrary extensions;
+        # os.chmod's S_IEXEC is a documented no-op here. Just confirm the
+        # file exists and chmod didn't raise.
+        assert sh.exists()
+    else:
+        mode = os.stat(sh).st_mode
+        assert mode & stat.S_IXUSR
+
+
+def test_create_mac_launcher(tmp_path):
+    launcher = install.create_mac_launcher(tmp_path)
+    assert launcher == tmp_path / "EEG Analysis Tool.command"
+    assert launcher.read_bytes().decode("utf-8") == install.command_launcher_content(tmp_path)
+    if sys.platform == "win32":
+        assert launcher.exists()
+    else:
+        mode = os.stat(launcher).st_mode
+        assert mode & stat.S_IXUSR
+
+
+def test_create_linux_desktop_entry_writes_to_applications_dir(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
+    dest = tmp_path / "EEGAnalyze"
+    created = install.create_linux_desktop_entry(dest)
+    apps_entry = fake_home / ".local" / "share" / "applications" / "eeg-analysis-tool.desktop"
+    assert apps_entry in created
+    assert apps_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
+
+
+def test_create_linux_desktop_entry_also_copies_to_desktop_if_present(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / "Desktop").mkdir()
+    monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
+    dest = tmp_path / "EEGAnalyze"
+    created = install.create_linux_desktop_entry(dest)
+    desktop_entry = fake_home / "Desktop" / "eeg-analysis-tool.desktop"
+    assert desktop_entry in created
+    assert desktop_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
+
+
+def test_create_linux_desktop_entry_skips_desktop_copy_if_no_desktop_dir(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
+    dest = tmp_path / "EEGAnalyze"
+    created = install.create_linux_desktop_entry(dest)
+    assert len(created) == 1
