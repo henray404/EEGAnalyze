@@ -1,6 +1,8 @@
 # Internal project context, not for public repo
 CLAUDE.md
-docs/
+docs/*
+# ...except bug log, which CLAUDE.md requires committing per debugging session
+!docs/bugs
 
 # Python
 __pycache__/

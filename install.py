@@ -129,12 +129,16 @@ def start_sh_content() -> str:
 
 
 def desktop_entry_content(dest: Path) -> str:
+    # Name=EEGAnalyze (bukan "EEG Analysis Tool"): sama alasan seperti
+    # shortcut Windows -- ini nama yang bakal diketik user di app launcher
+    # (repo/folder/URL semua "EEGAnalyze"). Comment bawa nama panjang yang
+    # ramah buat ditampilkan di tooltip/subtitle launcher.
     start_sh = dest / "start.sh"
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=EEG Analysis Tool\n"
-        "Comment=Launch EEG Analysis Tool (backend + frontend)\n"
+        "Name=EEGAnalyze\n"
+        "Comment=EEG Analysis Tool - Launch backend + frontend\n"
         f'Exec=bash "{start_sh}"\n'
         "Terminal=true\n"
         "Categories=Science;Education;\n"
@@ -151,18 +155,35 @@ def command_launcher_content(dest: Path) -> str:
 
 
 def windows_shortcut_vbscript(
-    target: Path, shortcut_path: Path, description: str
+    target: Path, shortcut_path: Path, description: str,
+    arguments: str = "", working_dir: Path = None,
 ) -> str:
-    """Create WScript.Shell VBScript content for a Windows shortcut."""
-    return (
-        'Set oWS = WScript.CreateObject("WScript.Shell")\n'
-        f'sLinkFile = "{shortcut_path}"\n'
-        "Set oLink = oWS.CreateShortcut(sLinkFile)\n"
-        f'oLink.TargetPath = "{target}"\n'
-        f'oLink.WorkingDirectory = "{target.parent}"\n'
-        f'oLink.Description = "{description}"\n'
-        "oLink.Save\n"
-    )
+    """Create WScript.Shell VBScript content for a Windows shortcut.
+
+    arguments: caller quotes paths with spaces (e.g. `"{path}"`); any
+    embedded double-quotes get escaped for the VBScript string literal
+    here. working_dir: defaults to target.parent when not given (fine
+    for target=start.bat; wrong when target is a shared interpreter like
+    pythonw.exe, so callers pointing at an interpreter must pass this).
+    """
+    wd = working_dir if working_dir is not None else target.parent
+    lines = [
+        'Set oWS = WScript.CreateObject("WScript.Shell")',
+        f'sLinkFile = "{shortcut_path}"',
+        "Set oLink = oWS.CreateShortcut(sLinkFile)",
+        f'oLink.TargetPath = "{target}"',
+    ]
+    if arguments:
+        # arguments may already contain literal double-quotes (callers quote
+        # paths with spaces, e.g. `"{path}"`) - VBScript string literals need
+        # those doubled ("") to escape them, not just re-wrapped, or cscript
+        # fails with "Expected end of statement".
+        escaped_args = arguments.replace(chr(34), chr(34) * 2)
+        lines.append(f'oLink.Arguments = "{escaped_args}"')
+    lines.append(f'oLink.WorkingDirectory = "{wd}"')
+    lines.append(f'oLink.Description = "{description}"')
+    lines.append("oLink.Save")
+    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------- #
@@ -186,40 +207,91 @@ def write_start_scripts(dest: Path) -> None:
     _make_executable(sh_path)
 
 
-def create_windows_shortcut(target: Path, shortcut_path: Path, description: str) -> None:
-    vbs_content = windows_shortcut_vbscript(target, shortcut_path, description)
+def create_windows_shortcut(
+    target: Path, shortcut_path: Path, description: str,
+    arguments: str = "", working_dir: Path = None,
+) -> None:
+    vbs_content = windows_shortcut_vbscript(
+        target, shortcut_path, description, arguments=arguments, working_dir=working_dir,
+    )
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vbs", delete=False, encoding="utf-8"
     ) as f:
         f.write(vbs_content)
         vbs_path = f.name
     try:
-        subprocess.run(
-            ["cscript", "//nologo", vbs_path],
-            check=True, capture_output=True, text=True,
-        )
+        run_kwargs = dict(check=True, capture_output=True, text=True)
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        subprocess.run(["cscript", "//nologo", vbs_path], **run_kwargs)
     finally:
         os.unlink(vbs_path)
 
 
+def resolve_system_pythonw() -> str:
+    """Find a system pythonw (falls back to python) for the shortcut target.
+
+    Runs at shortcut-creation time, i.e. right after clone, before
+    backend/.venv exists -- so the shortcut can never point at the venv's
+    own pythonw (it isn't there yet). launcher.py bootstraps that venv
+    itself on first run using sys.executable, same as this process; it
+    only needs a real Python to start existing, same prerequisite
+    check_python_version() already gates on before install can proceed.
+    """
+    return shutil.which("pythonw") or shutil.which("python") or "pythonw.exe"
+
+
+def _child_env() -> dict:
+    """os.environ copy with Tcl/Tk paths stripped, for spawning a separate
+    system Python that also uses tkinter (see launch()'s docstring for why).
+    """
+    env = os.environ.copy()
+    env.pop("TCL_LIBRARY", None)
+    env.pop("TK_LIBRARY", None)
+    env.pop("TIX_LIBRARY", None)
+    return env
+
+
 def create_windows_shortcuts(dest: Path) -> list[Path]:
-    """Create Start Menu + Desktop shortcuts pointing at start.bat."""
-    target = dest / "start.bat"
+    """Create Start Menu + Desktop shortcuts launching launcher.py's GUI.
+
+    Filename is "EEGAnalyze.lnk", not "EEG Analysis Tool.lnk". Windows
+    Search matches on word-prefixes of the shortcut's name; "EEG Analysis
+    Tool" never matches a user typing "eeganalyze" (no space in their
+    query, and it isn't a substring of any single word in that name). The
+    repo/folder/URL are already all "EEGAnalyze" -- that's the term users
+    actually associate with this app, so the shortcut name matches it
+    exactly. Description carries the friendlier full name for the tooltip.
+
+    Target is pythonw (no console window) running launcher.py directly,
+    not start.bat -- launcher.py already has its own tkinter GUI (status
+    log, progress bar, Start/Quit buttons) instead of raw cmd.exe windows.
+    start.bat/start.sh are still generated alongside as a manual fallback.
+    """
+    launcher_script = dest / "launcher.py"
+    target = Path(resolve_system_pythonw())
+    arguments = f'"{launcher_script}"'
     start_menu = (
         Path(os.environ["APPDATA"]) / "Microsoft" / "Windows"
-        / "Start Menu" / "Programs" / "EEG Analysis Tool.lnk"
+        / "Start Menu" / "Programs" / "EEGAnalyze.lnk"
     )
-    desktop = Path.home() / "Desktop" / "EEG Analysis Tool.lnk"
+    desktop = Path.home() / "Desktop" / "EEGAnalyze.lnk"
     created = []
     for shortcut_path in (start_menu, desktop):
         shortcut_path.parent.mkdir(parents=True, exist_ok=True)
-        create_windows_shortcut(target, shortcut_path, "Launch EEG Analysis Tool")
+        create_windows_shortcut(
+            target, shortcut_path, "EEGAnalyze - EEG Analysis Tool",
+            arguments=arguments, working_dir=dest,
+        )
         created.append(shortcut_path)
     return created
 
 
 def create_mac_launcher(dest: Path) -> Path:
-    launcher_path = dest / "EEG Analysis Tool.command"
+    # "EEGAnalyze.command", bukan "EEG Analysis Tool.command" -- Spotlight
+    # indexes nama file; user bakal ngetik "eeganalyze" (nama repo/folder),
+    # bukan nama panjangnya.
+    launcher_path = dest / "EEGAnalyze.command"
     launcher_path.write_bytes(command_launcher_content(dest).encode("utf-8"))
     _make_executable(launcher_path)
     return launcher_path
@@ -230,13 +302,13 @@ def create_linux_desktop_entry(dest: Path) -> list[Path]:
     content_bytes = content.encode("utf-8")
     apps_dir = Path.home() / ".local" / "share" / "applications"
     apps_dir.mkdir(parents=True, exist_ok=True)
-    entry_path = apps_dir / "eeg-analysis-tool.desktop"
+    entry_path = apps_dir / "eeganalyze.desktop"
     entry_path.write_bytes(content_bytes)
     _make_executable(entry_path)
     created = [entry_path]
     desktop_dir = Path.home() / "Desktop"
     if desktop_dir.exists():
-        desktop_copy = desktop_dir / "eeg-analysis-tool.desktop"
+        desktop_copy = desktop_dir / "eeganalyze.desktop"
         desktop_copy.write_bytes(content_bytes)
         _make_executable(desktop_copy)
         created.append(desktop_copy)
@@ -287,10 +359,15 @@ def run_command_streaming(
     the specific step (see run_setup) so a stuck-looking silence also says
     what's actually slow, not just that something is.
     """
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-    )
+    kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    if sys.platform == "win32":
+        # git.exe is a console app; spawned from a --windowed/pythonw
+        # parent with no console of its own, Windows auto-allocates a new
+        # console window for it unless told not to - the "terminal still
+        # opens" symptom users see during Install/Update even though the
+        # installer itself has no console.
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    process = subprocess.Popen(cmd, **kwargs)
     stop_heartbeat = threading.Event()
 
     def heartbeat():
@@ -500,19 +577,28 @@ class InstallerApp:
             ).pack(anchor="w", pady=8)
 
     def launch(self, dest: Path):
-        # start.bat already has "cd /d %~dp0" and uses the explicit venv
-        # python path (backend\.venv\Scripts\python.exe), not a bare
-        # "python"/"pythonw" PATH lookup - so it isn't affected by whichever
-        # Python happens to resolve first on PATH (e.g. a uv-managed
-        # install with broken Tcl/Tk). cwd=str(dest) is still set here as
-        # defense-in-depth, cheap and correct regardless.
+        # Same launcher.py GUI as the Start Menu/Desktop shortcut, not the
+        # raw start.bat/start.sh console window - "Launch now" should feel
+        # identical to launching from the shortcut just created.
+        #
+        # env=_child_env(): this installer is itself a frozen --windowed
+        # PyInstaller exe bundling its own Tcl/Tk, so its process env has
+        # TCL_LIBRARY/TK_LIBRARY pointing into its temp _MEIxxxx extraction
+        # folder. subprocess.Popen inherits os.environ by default, so the
+        # system pythonw we spawn for launcher.py would try to load Tcl/Tk
+        # from that (wrong, and about-to-be-cleaned-up) path instead of its
+        # own - Tk init fails immediately and pythonw exits silently (no
+        # console/stderr to show it), so "Launch now" looks like nothing
+        # happened. Stripping these lets the child interpreter find its own.
+        launcher_script = dest / "launcher.py"
         if detect_os() == "windows":
             subprocess.Popen(
-                ["cmd", "/c", "start", "", str(dest / "start.bat")],
-                shell=False, cwd=str(dest),
+                [resolve_system_pythonw(), str(launcher_script)],
+                shell=False, cwd=str(dest), env=_child_env(),
             )
         else:
-            subprocess.Popen(["bash", str(dest / "start.sh")], cwd=str(dest))
+            python3 = shutil.which("python3") or shutil.which("python") or "python3"
+            subprocess.Popen([python3, str(launcher_script)], cwd=str(dest), env=_child_env())
         self.root.destroy()
 
 

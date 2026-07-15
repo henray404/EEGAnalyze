@@ -24,11 +24,15 @@ logging.info("=" * 50)
 logging.info("Launcher started")
 
 # --- KONFIGURASI ---
-LOCAL_VERSION = "2.1"
+LOCAL_VERSION = "2.2"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(APP_DIR, "backend")
 FRONTEND_DIR = os.path.join(APP_DIR, "frontend_v2")
-VENV_DIR = os.path.join(APP_DIR, ".venv")
+# backend/.venv, bukan .venv di root -- ini yang dipakai start.bat/start.sh
+# (lihat install.py: start_bat_content) dan didokumentasikan di CLAUDE.md.
+# Sebelumnya launcher.py nunjuk ke .venv root, beda lokasi dari yang
+# sebenarnya dipakai/dibuat alur install+start.bat.
+VENV_DIR = os.path.join(BACKEND_DIR, ".venv")
 REQUIREMENTS = os.path.join(BACKEND_DIR, "requirements.txt")
 CHANGELOG_FILE = os.path.join(APP_DIR, "CHANGELOG.md")
 

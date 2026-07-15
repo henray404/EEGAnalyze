@@ -112,7 +112,7 @@ def test_desktop_entry_content(tmp_path):
     dest = tmp_path / "EEGAnalyze"
     content = install.desktop_entry_content(dest)
     assert "[Desktop Entry]" in content
-    assert "Name=EEG Analysis Tool" in content
+    assert "Name=EEGAnalyze" in content
     assert str(dest / "start.sh") in content
 
 
@@ -133,6 +133,24 @@ def test_windows_shortcut_vbscript(tmp_path):
     assert str(shortcut) in content
     assert "Launch EEG Analysis Tool" in content
     assert "oLink.Save" in content
+
+
+def test_windows_shortcut_vbscript_escapes_quoted_arguments(tmp_path):
+    # arguments is built by callers as a pre-quoted path (e.g. `"{path}"`)
+    # to survive spaces once passed to CreateProcess. Those embedded quotes
+    # must be doubled for a valid VBScript string literal, or cscript fails
+    # with "Expected end of statement" (real bug: they were passed through
+    # unescaped, producing four consecutive quote chars).
+    target = tmp_path / "pythonw.exe"
+    shortcut = tmp_path / "EEGAnalyze.lnk"
+    launcher = tmp_path / "EEGAnalyze" / "launcher.py"
+    arguments = f'"{launcher}"'
+    content = install.windows_shortcut_vbscript(
+        target, shortcut, "desc", arguments=arguments, working_dir=tmp_path,
+    )
+    assert f'oLink.Arguments = """{launcher}"""' in content
+    assert '""""' not in content
+    assert 'oLink.Arguments = "' + arguments + '"' not in content
 
 
 def test_write_start_scripts_creates_both_files(tmp_path):
@@ -161,7 +179,7 @@ def test_write_start_scripts_makes_sh_executable(tmp_path):
 
 def test_create_mac_launcher(tmp_path):
     launcher = install.create_mac_launcher(tmp_path)
-    assert launcher == tmp_path / "EEG Analysis Tool.command"
+    assert launcher == tmp_path / "EEGAnalyze.command"
     assert launcher.read_bytes().decode("utf-8") == install.command_launcher_content(tmp_path)
     if sys.platform == "win32":
         assert launcher.exists()
@@ -176,7 +194,7 @@ def test_create_linux_desktop_entry_writes_to_applications_dir(tmp_path, monkeyp
     monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
     dest = tmp_path / "EEGAnalyze"
     created = install.create_linux_desktop_entry(dest)
-    apps_entry = fake_home / ".local" / "share" / "applications" / "eeg-analysis-tool.desktop"
+    apps_entry = fake_home / ".local" / "share" / "applications" / "eeganalyze.desktop"
     assert apps_entry in created
     assert apps_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
 
@@ -188,7 +206,7 @@ def test_create_linux_desktop_entry_also_copies_to_desktop_if_present(tmp_path, 
     monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
     dest = tmp_path / "EEGAnalyze"
     created = install.create_linux_desktop_entry(dest)
-    desktop_entry = fake_home / "Desktop" / "eeg-analysis-tool.desktop"
+    desktop_entry = fake_home / "Desktop" / "eeganalyze.desktop"
     assert desktop_entry in created
     assert desktop_entry.read_bytes().decode("utf-8") == install.desktop_entry_content(dest)
 
