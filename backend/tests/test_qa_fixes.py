@@ -5,8 +5,8 @@ Tanpa framework wajib; assert murni.
 """
 import numpy as np
 
-from app.processing.loader import EEGLoader
-from app.processing.chunking import _bandpass_array, _MIN_CHUNK_SAMPLES
+from app.processing.io.loader import EEGLoader
+from app.processing.features.chunking import _bandpass_array, _MIN_CHUNK_SAMPLES
 
 
 def _make_loader_with_adjacent_occurrences():
@@ -50,7 +50,7 @@ def test_adjacent_same_task_occurrences_not_merged():
 
 def test_occurrence_selection_filters_to_one():
     """selected_occ hanya proses occurrence terpilih (fitur 'Thinking pertama')."""
-    from app.processing.features import EEGFeatures
+    from app.processing.features.features import EEGFeatures
     import mne
     sfreq = 100.0
     data = np.random.RandomState(2).randn(2, 400) * 1e-6

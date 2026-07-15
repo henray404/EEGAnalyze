@@ -1,5 +1,5 @@
-﻿"""
-Modul chunking â€” Pipeline Chunking & Chain Encoding untuk sinyal EEG.
+"""
+Modul chunking — Pipeline Chunking & Chain Encoding untuk sinyal EEG.
 
 Mengadopsi format output dan alur kerja dari ``chunking (1).py`` namun:
   * Menambah 3 fitur frequency-domain (band_power, relative_power,
@@ -7,7 +7,7 @@ Mengadopsi format output dan alur kerja dari ``chunking (1).py`` namun:
   * TIDAK melakukan double bandpass filtering (sinyal tidak dibandpass
     secara global lebih dulu; cukup bandpass per-subband di dalam chunk).
   * Mendukung toggle task segmentation (task-aware atau whole-file).
-  * Chain encoding configurable â€” user pilih fitur mana yang di-chain.
+  * Chain encoding configurable — user pilih fitur mana yang di-chain.
   * Batch orchestration EEGET-ALS: 170 subjek x 9 skenario.
 
 Posisi di pipeline:
@@ -43,8 +43,8 @@ from app.config import (
     DEFAULT_SUBBANDS, DEFAULT_ENCODING_WINDOW,
     EEGET_ALS_SCENARIOS,
 )
-from app.processing.loader import EEGLoader
-from app.processing.psd import PSDAnalyzer
+from app.processing.io.loader import EEGLoader
+from app.processing.features.psd import PSDAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def _chunk_unit_rows(args):
     Module-level + argumen picklable (numpy array + tuple) supaya bisa
     dijalankan di ProcessPoolExecutor pada Windows (spawn).
     """
-    task, ch, signal, sfreq, chunk_samples, subband_items, features = args
+    task, occurrence, ch, signal, sfreq, chunk_samples, subband_items, features = args
     rows = []
     n_chunks = len(signal) // chunk_samples
     subbands_dict = dict(subband_items)
@@ -146,7 +146,9 @@ def _chunk_unit_rows(args):
 
         for sb_name, (low, high) in subband_items:
             row = {"chunk": ci, "channel": ch, "subband": sb_name}
-            if task is not None:
+            if occurrence is not None:
+                row = {"task": task, "occurrence": occurrence, **row}
+            elif task is not None:
                 row = {"task": task, **row}
             filtered = (_bandpass_array(chunk_signal, sfreq, low, high)
                         if want_time else None)
@@ -224,7 +226,7 @@ class ChunkingPipeline:
 
         Sinyal dipotong menjadi chunk non-overlapping sepanjang
         ``chunk_duration`` detik. Chunk terakhir yang tidak penuh dibuang.
-        Sinyal TIDAK dibandpass secara global terlebih dahulu â€” bandpass
+        Sinyal TIDAK dibandpass secara global terlebih dahulu — bandpass
         dilakukan per-subband di dalam setiap chunk.
 
         Returns
@@ -248,7 +250,7 @@ class ChunkingPipeline:
 
         subband_items = list(subbands.items())
         units = [
-            (None, ch, df[ch].values, sfreq, chunk_samples,
+            (None, None, ch, df[ch].values, sfreq, chunk_samples,
              subband_items, features)
             for ch in channels
             if ch in df.columns and len(df[ch].values) // chunk_samples > 0
@@ -300,8 +302,65 @@ class ChunkingPipeline:
                 signal = seg[ch].values
                 if len(signal) // chunk_samples == 0:
                     continue
-                units.append((task, ch, signal, sfreq, chunk_samples,
+                units.append((task, None, ch, signal, sfreq, chunk_samples,
                               subband_items, features))
+
+        rows = _run_chunk_units(units, parallel, max_workers)
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def compute_occurrence_chunked_features(loader, df, channels, occurrences,
+                                             chunk_duration=DEFAULT_CHUNK_DURATION,
+                                             subbands=None, features=None,
+                                             parallel=False, max_workers=None):
+        """Hitung fitur per chunk per occurrence per channel per subband.
+
+        Sama seperti ``compute_task_chunked_features``, tapi segmentasi per
+        occurrence spesifik (``loader.extract_occurrence_segment``) alih-alih
+        seluruh task. Dipakai saat user mengisolasi occurrence tertentu
+        (mis. cuma "Resting #1") di single-file, supaya chunk + chain
+        encoding tetap tersedia untuk seleksi granular itu (sebelumnya cuma
+        full-data yang didukung untuk occurrence spesifik).
+
+        Parameters
+        ----------
+        occurrences : list[tuple[str, int]]
+            Daftar (task_name, occurrence_num) yang mau di-chunk.
+
+        Returns
+        -------
+        pd.DataFrame
+            Kolom: [task, occurrence, chunk, channel, subband] + fitur.
+        """
+        if subbands is None:
+            subbands = DEFAULT_SUBBANDS
+        if features is None:
+            features = DEFAULT_CHUNK_FEATURES
+
+        sfreq = loader.sfreq
+        chunk_samples = int(chunk_duration * sfreq)
+        if chunk_samples < _MIN_CHUNK_SAMPLES:
+            logger.warning(
+                "chunk_duration %.3fs pada sfreq %s Hz menghasilkan "
+                "%d sampel (< %d). Kembalikan DataFrame kosong.",
+                chunk_duration, sfreq, chunk_samples, _MIN_CHUNK_SAMPLES,
+            )
+            return pd.DataFrame()
+
+        subband_items = list(subbands.items())
+        units = []
+        for task_name, occ_num in occurrences:
+            seg = loader.extract_occurrence_segment(df, task_name, occ_num)
+            if seg.empty:
+                continue
+            for ch in channels:
+                if ch not in seg.columns:
+                    continue
+                signal = seg[ch].values
+                if len(signal) // chunk_samples == 0:
+                    continue
+                units.append((task_name, occ_num, ch, signal, sfreq,
+                              chunk_samples, subband_items, features))
 
         rows = _run_chunk_units(units, parallel, max_workers)
         return pd.DataFrame(rows)
@@ -340,9 +399,8 @@ class ChunkingPipeline:
                 if f in chunked_features_df.columns
             ]
 
-        has_task = "task" in chunked_features_df.columns
-        group_cols = (["task", "channel", "subband"] if has_task
-                      else ["channel", "subband"])
+        group_cols = [c for c in ("task", "occurrence", "channel", "subband")
+                      if c in chunked_features_df.columns]
 
         all_rows = []
         for group_key, grp in chunked_features_df.groupby(group_cols):
@@ -352,22 +410,13 @@ class ChunkingPipeline:
 
             if not isinstance(group_key, tuple):
                 group_key = (group_key,)
+            group_map = dict(zip(group_cols, group_key))
 
             chunks = grp["chunk"].values
 
             transition_rows = []
             for idx in range(len(chunks) - 1):
-                if has_task:
-                    row = {
-                        "task": group_key[0],
-                        "channel": group_key[1],
-                        "subband": group_key[2],
-                    }
-                else:
-                    row = {
-                        "channel": group_key[0],
-                        "subband": group_key[1],
-                    }
+                row = dict(group_map)
                 row["chunk_from"] = int(chunks[idx])
                 row["chunk_to"] = int(chunks[idx + 1])
                 transition_rows.append(row)
@@ -402,9 +451,8 @@ class ChunkingPipeline:
             ]
 
         df = chunked_features_df.copy()
-        has_task = "task" in df.columns
-        group_cols = (["task", "channel", "subband"] if has_task
-                      else ["channel", "subband"])
+        group_cols = [c for c in ("task", "occurrence", "channel", "subband")
+                      if c in df.columns]
 
         for feat in features:
             if feat not in df.columns:
@@ -445,9 +493,8 @@ class ChunkingPipeline:
                 if c.startswith("chain_")
             ]
 
-        has_task = "task" in chain_df.columns
-        group_cols = (["task", "channel", "subband"] if has_task
-                      else ["channel", "subband"])
+        group_cols = [c for c in ("task", "occurrence", "channel", "subband")
+                      if c in chain_df.columns]
 
         rows = []
         for group_key, grp in chain_df.groupby(group_cols):
@@ -455,12 +502,7 @@ class ChunkingPipeline:
 
             if not isinstance(group_key, tuple):
                 group_key = (group_key,)
-
-            if has_task:
-                row = {"task": group_key[0], "channel": group_key[1],
-                       "subband": group_key[2]}
-            else:
-                row = {"channel": group_key[0], "subband": group_key[1]}
+            row = dict(zip(group_cols, group_key))
 
             for feat in features:
                 col = f"chain_{feat}"
@@ -711,521 +753,4 @@ def _common_prefix_length(s1, s2):
     return n
 
 
-# ------------------------------------------------------------------ #
-#  5. Batch orchestration EEGET-ALS                                   #
-# ------------------------------------------------------------------ #
-
-def _find_edf_path(dataset_root, subject_id, scenario_num):
-    """Cari EDF subjek + skenario: dataset_root/idN/time1/scenarioN/EEG.edf."""
-    edf_path = os.path.join(
-        dataset_root, subject_id, "time1",
-        f"scenario{scenario_num}", "EEG.edf",
-    )
-    if os.path.isfile(edf_path):
-        return edf_path
-    return None
-
-
-def _get_subject_ids(dataset_root, subject_range=None):
-    """Ambil daftar subject_id (idN) dari folder dataset, sorted numeric."""
-    if not os.path.isdir(dataset_root):
-        return []
-
-    all_dirs = [
-        name for name in os.listdir(dataset_root)
-        if os.path.isdir(os.path.join(dataset_root, name))
-        and name.startswith("id")
-    ]
-
-    def _sort_key(s):
-        num = s.replace("id", "")
-        try:
-            return int(num)
-        except ValueError:
-            return 999999
-
-    all_dirs.sort(key=_sort_key)
-
-    if subject_range is not None:
-        start, end = subject_range
-        all_dirs = [
-            d for d in all_dirs
-            if start <= _sort_key(d) <= end
-        ]
-
-    return all_dirs
-
-
-def process_dataset(dataset_root, subject_range=None, scenarios=None,
-                    chunk_duration=DEFAULT_CHUNK_DURATION,
-                    subbands=None, features=None,
-                    chain_features=None,
-                    use_task_segmentation=True,
-                    progress_callback=None):
-    """Batch chunking+chain encoding untuk EEGET-ALS Dataset.
-
-    Iterasi 170 subjek x 9 skenario, panggil ``process_single_file`` per
-    EDF, gabungkan seluruh hasil ke 3 DataFrame besar.
-
-    Parameters
-    ----------
-    dataset_root : str
-        Root folder EEGET-ALS Dataset.
-    subject_range : tuple(int, int) | None
-        (start, end) inclusive. None = semua subjek id*.
-    scenarios : list[int] | None
-        Daftar skenario (1..9). None = semua.
-    chunk_duration : float
-    subbands : dict | None
-    features : list[str] | None
-        Fitur per chunk (default 6 fitur).
-    chain_features : list[str] | None
-        Fitur yang di-chain (default sama dengan ``features``).
-    use_task_segmentation : bool
-        Toggle task segmentation vs whole-file chunking.
-    progress_callback : callable | None
-        Callback ``(subject_id, scenario, current, total)``.
-
-    Returns
-    -------
-    tuple
-        (features_df, chain_df, summary_df, run_summary)
-        - features_df : long format fitur per chunk (output 1)
-        - chain_df    : long format chain sequence per grup (output 2)
-        - summary_df  : cross-file comparison (output 3)
-        - run_summary : dict statistik run (n_success, n_failed, ...)
-    """
-    if scenarios is None:
-        scenarios = list(range(1, 10))
-    if subbands is None:
-        subbands = DEFAULT_SUBBANDS
-    if features is None:
-        features = DEFAULT_CHUNK_FEATURES
-    if chain_features is None:
-        chain_features = features
-
-    subject_ids = _get_subject_ids(dataset_root, subject_range)
-    total_tasks = len(subject_ids) * len(scenarios)
-    current = 0
-    n_failed = 0
-    n_success = 0
-    n_total_chunks = 0
-
-    all_features = []
-    all_chains = []
-
-    for subj_id in subject_ids:
-        for sc_num in scenarios:
-            current += 1
-
-            edf_path = _find_edf_path(dataset_root, subj_id, sc_num)
-            if edf_path is None:
-                logger.info("EDF tidak ditemukan: %s scenario%d", subj_id, sc_num)
-                n_failed += 1
-                if progress_callback:
-                    progress_callback(subj_id, sc_num, current, total_tasks)
-                continue
-
-            try:
-                loader = EEGLoader()
-                loader.load_edf(edf_path)
-                df = loader.extract_dataframe()
-                channels = loader.channel_names
-
-                feat_df, chain_df = ChunkingPipeline.process_single_file(
-                    loader=loader,
-                    df=df,
-                    channels=channels,
-                    chunk_duration=chunk_duration,
-                    subbands=subbands,
-                    features=features,
-                    chain_features=chain_features,
-                    use_task_segmentation=use_task_segmentation,
-                    filename=os.path.basename(edf_path),
-                    subject_id=subj_id,
-                    scenario=f"scenario{sc_num}",
-                    scenario_id=int(sc_num),
-                )
-
-                if feat_df.empty:
-                    n_failed += 1
-                else:
-                    all_features.append(feat_df)
-                    n_success += 1
-                    # Hitung jumlah chunk unik (per file)
-                    n_total_chunks += int(
-                        feat_df[["channel", "subband", "chunk", "task"]]
-                        .drop_duplicates().shape[0]
-                    )
-
-                if not chain_df.empty:
-                    all_chains.append(chain_df)
-
-            except Exception as exc:
-                logger.warning(
-                    "Gagal memproses %s/scenario%d: %s",
-                    subj_id, sc_num, exc,
-                )
-                n_failed += 1
-
-            if progress_callback:
-                progress_callback(subj_id, sc_num, current, total_tasks)
-
-    features_df = (
-        pd.concat(all_features, ignore_index=True) if all_features
-        else pd.DataFrame()
-    )
-    chain_df = (
-        pd.concat(all_chains, ignore_index=True) if all_chains
-        else pd.DataFrame()
-    )
-    summary_df = ChunkingPipeline.generate_cross_file_summary(chain_df)
-
-    run_summary = {
-        "n_subjects": len(subject_ids),
-        "n_scenarios": len(scenarios),
-        "n_total_files": total_tasks,
-        "n_success": n_success,
-        "n_failed": n_failed,
-        "n_total_chunks": n_total_chunks,
-        "n_feature_rows": int(features_df.shape[0]),
-        "n_chain_rows": int(chain_df.shape[0]),
-        "n_summary_rows": int(summary_df.shape[0]),
-    }
-
-    return features_df, chain_df, summary_df, run_summary
-
-
-def _task_segments_from_df(df, task_name):
-    """Ambil segment task dari DataFrame (tanpa perlu loader)."""
-    return df[df["marker"] == task_name].copy()
-
-
-def _compute_task_chunked_from_df(df, channels, sfreq, tasks,
-                                   chunk_duration, subbands, features):
-    """Sama seperti compute_task_chunked_features tapi tanpa loader object."""
-    all_parts = []
-    for task in tasks:
-        seg = _task_segments_from_df(df, task)
-        if seg.empty:
-            continue
-        feat_df = ChunkingPipeline.compute_chunked_subband_features(
-            seg, channels, sfreq, chunk_duration, subbands, features,
-        )
-        if feat_df.empty:
-            continue
-        feat_df.insert(0, "task", task)
-        all_parts.append(feat_df)
-
-    if all_parts:
-        return pd.concat(all_parts, ignore_index=True)
-    return pd.DataFrame()
-
-
-def process_cached_item(df, channels, sfreq, tasks,
-                        chunk_duration=DEFAULT_CHUNK_DURATION,
-                        subbands=None, features=None,
-                        chain_features=None,
-                        use_task_segmentation=True,
-                        scale_x10k=False,
-                        filename=None, subject_id=None,
-                        scenario=None, scenario_id=None):
-    """Varian process_single_file yang tidak butuh loader object.
-
-    Dipakai ketika data sudah di-cache (preprocessed) dari batch ZIP.
-    ``df`` harus sudah punya kolom ``marker`` kalau task segmentation
-    dipakai.
-
-    Returns
-    -------
-    tuple (features_df, chain_df)
-    """
-    if subbands is None:
-        subbands = DEFAULT_SUBBANDS
-    if features is None:
-        features = DEFAULT_CHUNK_FEATURES
-
-    fname = filename or "EEG.edf"
-    subj = subject_id if subject_id is not None else ""
-    scen = scenario if scenario is not None else "unknown"
-    scen_id = scenario_id if scenario_id is not None else -1
-
-    # --- Chunking + FE ---
-    if use_task_segmentation and tasks:
-        chunked_df = _compute_task_chunked_from_df(
-            df, channels, sfreq, tasks, chunk_duration, subbands, features,
-        )
-    else:
-        chunked_df = ChunkingPipeline.compute_chunked_subband_features(
-            df, channels, sfreq, chunk_duration, subbands, features,
-        )
-
-    if chunked_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    has_task = "task" in chunked_df.columns
-
-    # --- OUTPUT 1: features per chunk ---
-    feat_rows = []
-    for _, r in chunked_df.iterrows():
-        base = {
-            "subject_id": subj,
-            "scenario": scen,
-            "scenario_id": scen_id,
-            "filename": fname,
-            "chunk": int(r["chunk"]),
-            "task": r["task"] if has_task else "",
-            "channel": r["channel"],
-            "subband": r["subband"],
-        }
-        for feat in features:
-            if feat not in chunked_df.columns:
-                continue
-            row = dict(base)
-            row["feature"] = feat
-            row["feature_value"] = float(r[feat])
-            feat_rows.append(row)
-    features_out = pd.DataFrame(feat_rows)
-
-    # --- OUTPUT 2: chain sequence ---
-    if chain_features is None:
-        chain_features = features
-    chain_enc = ChunkingPipeline.compute_chain_encoding(
-        chunked_df, chain_features
-    )
-    chain_sum = ChunkingPipeline.summarize_chain_encoding(
-        chain_enc, chain_features
-    )
-
-    chain_rows = []
-    if not chain_sum.empty:
-        for _, r in chain_sum.iterrows():
-            for feat in chain_features:
-                seq_col = f"chain_{feat}_sequence"
-                if seq_col not in chain_sum.columns:
-                    continue
-                chain_rows.append({
-                    "subject_id": subj,
-                    "scenario": scen,
-                    "scenario_id": scen_id,
-                    "filename": fname,
-                    "task": r["task"] if has_task else "",
-                    "channel": r["channel"],
-                    "subband": r["subband"],
-                    "feature": feat,
-                    "chain_sequence": r[seq_col],
-                    "chain_ratio": r.get(f"chain_{feat}_ratio", 0.0),
-                })
-    chain_out = pd.DataFrame(chain_rows)
-
-    if scale_x10k and not chunked_df.empty and not chain_out.empty:
-        feat_cols_to_scale = [f for f in features if f in chunked_df.columns]
-        chunked_scaled = chunked_df.copy()
-        chunked_scaled[feat_cols_to_scale] = chunked_scaled[feat_cols_to_scale] * 10_000
-
-        chain_enc_s = ChunkingPipeline.compute_chain_encoding(chunked_scaled, chain_features)
-        chain_sum_s = ChunkingPipeline.summarize_chain_encoding(chain_enc_s, chain_features)
-
-        if not chain_sum_s.empty:
-            scaled_rows = []
-            for _, r in chain_sum_s.iterrows():
-                for feat in chain_features:
-                    seq_col = f"chain_{feat}_sequence"
-                    if seq_col not in chain_sum_s.columns:
-                        continue
-                    row_s = {
-                        "channel": r["channel"],
-                        "subband": r["subband"],
-                        "feature": feat,
-                        "chain_sequence_x10k": r[seq_col],
-                        "chain_ratio_x10k": r.get(f"chain_{feat}_ratio", 0.0),
-                    }
-                    if has_task:
-                        row_s["task"] = r.get("task", "")
-                    scaled_rows.append(row_s)
-
-            scaled_df = pd.DataFrame(scaled_rows)
-            merge_keys = ["channel", "subband", "feature"]
-            if has_task:
-                merge_keys = ["task"] + merge_keys
-            chain_out = chain_out.merge(
-                scaled_df[merge_keys + ["chain_sequence_x10k", "chain_ratio_x10k"]],
-                on=merge_keys,
-                how="left",
-            )
-
-            if "chain_sequence_x10k" in chain_out.columns:
-                def _seq_sim(row):
-                    s1 = str(row["chain_sequence"]) if pd.notna(row["chain_sequence"]) else ""
-                    s2 = str(row["chain_sequence_x10k"]) if pd.notna(row["chain_sequence_x10k"]) else ""
-                    denom = max(len(s1), len(s2))
-                    if denom == 0:
-                        return float("nan")
-                    matches = sum(c1 == c2 for c1, c2 in zip(s1, s2))
-                    return round(matches / denom * 100, 2)
-                chain_out["similarity_pct"] = chain_out.apply(_seq_sim, axis=1)
-
-    return features_out, chain_out
-
-
-def process_cached_items(cached_items,
-                         chunk_duration=DEFAULT_CHUNK_DURATION,
-                         subbands=None, features=None,
-                         chain_features=None,
-                         use_task_segmentation=True,
-                         scale_x10k=False,
-                         progress_callback=None):
-    """Batch chunking+chain encoding dari cached items.
-
-    Alternatif ``process_dataset`` untuk data yang sudah di-preprocess
-    di session_state (hasil batch ZIP). Tidak load EDF ulang.
-
-    Parameters
-    ----------
-    cached_items : list[dict]
-        Tiap item harus punya ``df`` (DataFrame atau path pickle),
-        ``channels``, ``sfreq``, ``tasks``, ``subject_id``,
-        ``scenario``, ``scenario_id``, ``filename``.
-    progress_callback : callable | None
-
-    Returns
-    -------
-    tuple (features_df, chain_df, summary_df, run_summary)
-    """
-    if subbands is None:
-        subbands = DEFAULT_SUBBANDS
-    if features is None:
-        features = DEFAULT_CHUNK_FEATURES
-    if chain_features is None:
-        chain_features = features
-
-    total = len(cached_items)
-    n_success = 0
-    n_failed = 0
-    n_total_chunks = 0
-
-    all_features = []
-    all_chains = []
-
-    for idx, item in enumerate(cached_items, start=1):
-        subj = item.get("subject_id", "")
-        scen = item.get("scenario", "unknown")
-        scen_id = item.get("scenario_id", -1)
-
-        # Load df dari pickle jika path
-        raw_df = item["df"]
-        if isinstance(raw_df, str):
-            try:
-                raw_df = pd.read_pickle(raw_df)
-            except Exception as exc:
-                logger.warning("Gagal load cache %s: %s", raw_df, exc)
-                n_failed += 1
-                if progress_callback:
-                    progress_callback(subj, scen_id, idx, total)
-                continue
-
-        channels = item.get("channels") or [
-            c for c in raw_df.columns if c not in ("time", "marker")
-        ]
-        sfreq = item["sfreq"]
-        tasks = item.get("tasks") or []
-
-        try:
-            feat_df, chain_df = process_cached_item(
-                df=raw_df,
-                channels=channels,
-                sfreq=sfreq,
-                tasks=tasks,
-                chunk_duration=chunk_duration,
-                subbands=subbands,
-                features=features,
-                chain_features=chain_features,
-                use_task_segmentation=use_task_segmentation,
-                scale_x10k=scale_x10k,
-                filename=item.get("filename", "EEG.edf"),
-                subject_id=subj,
-                scenario=scen,
-                scenario_id=scen_id,
-            )
-        except Exception as exc:
-            logger.warning("Gagal memproses %s: %s", item.get("filename"), exc)
-            n_failed += 1
-            if progress_callback:
-                progress_callback(subj, scen_id, idx, total)
-            continue
-
-        if feat_df.empty:
-            n_failed += 1
-        else:
-            all_features.append(feat_df)
-            n_success += 1
-            n_total_chunks += int(
-                feat_df[["channel", "subband", "chunk", "task"]]
-                .drop_duplicates().shape[0]
-            )
-
-        if not chain_df.empty:
-            all_chains.append(chain_df)
-
-        if progress_callback:
-            progress_callback(subj, scen_id, idx, total)
-
-    features_df = (
-        pd.concat(all_features, ignore_index=True) if all_features
-        else pd.DataFrame()
-    )
-    chain_df = (
-        pd.concat(all_chains, ignore_index=True) if all_chains
-        else pd.DataFrame()
-    )
-    summary_df = ChunkingPipeline.generate_cross_file_summary(chain_df)
-
-    run_summary = {
-        "n_total_files": total,
-        "n_success": n_success,
-        "n_failed": n_failed,
-        "n_total_chunks": n_total_chunks,
-        "n_feature_rows": int(features_df.shape[0]),
-        "n_chain_rows": int(chain_df.shape[0]),
-        "n_summary_rows": int(summary_df.shape[0]),
-    }
-
-    return features_df, chain_df, summary_df, run_summary
-
-
-def process_and_export(dataset_root, output_dir,
-                       features_name="output_features.csv",
-                       chain_name="output_chain.csv",
-                       summary_name="output_summary.csv",
-                       **kwargs):
-    """Wrapper: jalankan ``process_dataset`` lalu simpan 3 CSV.
-
-    Returns
-    -------
-    dict  run_summary + path output.
-    """
-    features_df, chain_df, summary_df, run_summary = process_dataset(
-        dataset_root, **kwargs
-    )
-
-    os.makedirs(output_dir, exist_ok=True)
-    paths = {}
-
-    if not features_df.empty:
-        p = os.path.join(output_dir, features_name)
-        features_df.to_csv(p, index=False)
-        paths["features"] = p
-
-    if not chain_df.empty:
-        p = os.path.join(output_dir, chain_name)
-        chain_df.to_csv(p, index=False)
-        paths["chain"] = p
-
-    if not summary_df.empty:
-        p = os.path.join(output_dir, summary_name)
-        summary_df.to_csv(p, index=False)
-        paths["summary"] = p
-
-    run_summary["output_paths"] = paths
-    return run_summary
 

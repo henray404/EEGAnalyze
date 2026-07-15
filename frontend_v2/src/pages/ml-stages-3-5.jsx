@@ -1,6 +1,7 @@
 /* global React, Icon */
 const { useState: useStateMLb, useEffect: useEffectMLb, useRef: useRefMLb } = React;
 const ApiMLb = window.Api;
+const ProgressLogMLb = window.ProgressLog;
 
 function PlotlyFig({ figure, minHeight = 360 }) {
   const ref = useRefMLb(null);
@@ -195,9 +196,10 @@ function StageModels({ onBack, onNext, selected, setSelected, hyperOverrides, se
 }
 
 // ===================== STAGE 4: TRAIN =====================
-function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrategy, normalize, splitPct, selected, hyperOverrides, trainResult, setTrainResult }) {
+function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrategy, normalize, splitPct, selected, hyperOverrides, groupCol, classWeightBalanced, setClassWeightBalanced, trainResult, setTrainResult }) {
   const [training, setTraining] = useStateMLb(false);
-  const [progress, setProgress] = useStateMLb(0);
+  const [progress, setProgress] = useStateMLb(null);
+  const [logs, setLogs] = useStateMLb([]);
   const [error, setError] = useStateMLb(null);
   const [chartTab, setChartTab] = useStateMLb('cm');
   const [cmModelIdx, setCmModelIdx] = useStateMLb(0);
@@ -210,10 +212,8 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
     }
     setTraining(true);
     setError(null);
-    setProgress(0);
-    const ticker = setInterval(() => {
-      setProgress(p => Math.min(p + Math.random() * 4 + 1, 92));
-    }, 250);
+    setProgress(null);
+    setLogs([]);
     try {
       const payload = {
         dataset_id: dataset.dataset_id,
@@ -223,18 +223,23 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
         normalize,
         test_size: (100 - splitPct) / 100,
         cv_folds: 5,
+        group_col: groupCol || null,
+        class_weight_balanced: !!classWeightBalanced,
         models: selected.map(id => {
           const m = MODELS.find(x => x.id === id);
           return { id, hyper: hyperOverrides[id] || m?.defaults || {} };
         }),
       };
-      const data = await ApiMLb.mlTrain(payload);
+      // Progres nyata dari backend: bar = model ke-i / N, log per model.
+      const data = await ApiMLb.mlTrain(payload, {
+        onProgress: (done, total) => setProgress(total > 0 ? Math.round((done / total) * 100) : 0),
+        onLog: (message, level) => setLogs(prev => [...prev, { message, level }]),
+      });
       setTrainResult(data);
       setProgress(100);
     } catch (e) {
       setError(e.message || 'Gagal training');
     } finally {
-      clearInterval(ticker);
       setTraining(false);
     }
   };
@@ -248,20 +253,13 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
   if (training) {
     return (
       <main data-screen-label="08 ML — Training">
-        <div className="card-hero" style={{ padding: '40px 40px', textAlign: 'center', minHeight: 320, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-          <div className="hero-deco" style={{ width: 320, height: 320, top: -100, right: -80 }} />
-          <div className="hero-deco-2" style={{ width: 200, height: 200, bottom: -100, left: -40 }} />
-          <div className="card-hero-inner" style={{ maxWidth: 560, margin: '0 auto' }}>
-            <div className="eyebrow">PELATIHAN BERJALAN</div>
-            <h2 style={{ margin: '12px 0 24px', fontSize: 30, fontWeight: 700, letterSpacing: '-0.02em' }}>Melatih {selected.length} model...</h2>
-            <div className="progress lg" style={{ background: 'rgba(255,255,255,0.18)', height: 14 }}>
-              <div className="progress-bar" style={{ width: `${progress}%`, background: 'linear-gradient(90deg, rgba(255,255,255,0.6), rgba(255,255,255,0.95))' }} />
-            </div>
-            <div className="row-between" style={{ marginTop: 14, fontSize: 14, fontWeight: 500, opacity: 0.9 }}>
-              <span>Cross-validation + fit + evaluasi</span>
-              <span style={{ fontWeight: 700 }}>{Math.round(progress)}%</span>
-            </div>
-          </div>
+        <div className="card card-pad-lg" style={{ padding: '40px', minHeight: 320 }}>
+          <ProgressLogMLb
+            title="PELATIHAN BERJALAN"
+            subtitle={`Melatih ${selected.length} model...`}
+            logs={logs}
+            progress={progress}
+          />
         </div>
       </main>
     );
@@ -272,7 +270,11 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
       <main data-screen-label="08 ML — Train Error">
         <div className="card card-pad-lg">
           <h3 style={{ margin: 0, fontSize: 18 }}>Gagal Training</h3>
-          <p style={{ marginTop: 12, color: 'var(--danger)' }}>{error}</p>
+          <p style={{ marginTop: 12, color: 'var(--danger)', lineHeight: 1.6, maxWidth: 720 }}>{error}</p>
+          <p style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            Detail teknis lengkap (request URL, status code, response body) sudah dicatat
+            di browser console -- buka DevTools (F12) &gt; tab Console.
+          </p>
           <div className="row" style={{ marginTop: 24, gap: 12 }}>
             <button className="btn btn-soft" onClick={onBack}><Icon.ArrowLeft /> Kembali</button>
             <button className="btn btn-primary" onClick={runTrain}><Icon.Refresh /> Coba lagi</button>
@@ -287,9 +289,20 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
       <main data-screen-label="08 ML — Train Ready">
         <div className="card card-pad-lg" style={{ textAlign: 'center' }}>
           <h3>Siap training {selected.length} model</h3>
-          <button className="btn btn-primary" onClick={runTrain} style={{ marginTop: 16 }}>
-            <Icon.Rocket /> Mulai Training
-          </button>
+          {groupCol && (
+            <div style={{ margin: '12px auto 0', maxWidth: 480, fontSize: 12.5, color: 'var(--text-muted)' }}>
+              Group Column: <strong style={{ color: 'var(--text-primary)' }}>{groupCol}</strong> — split train/test group-aware.
+            </div>
+          )}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 16, cursor: 'pointer', fontSize: 13 }}>
+            <input type="checkbox" checked={!!classWeightBalanced} onChange={e => setClassWeightBalanced(e.target.checked)} />
+            Class weight balanced (bantu kelas minoritas, ubah perilaku model)
+          </label>
+          <div>
+            <button className="btn btn-primary" onClick={runTrain} style={{ marginTop: 16 }}>
+              <Icon.Rocket /> Mulai Training
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -327,10 +340,24 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
         </div>
       </div>
 
+      {trainResult.leakage_warning && (
+        <div style={{ marginBottom: 20, padding: '14px 18px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 14, fontSize: 13, lineHeight: 1.55 }}>
+          <strong>Peringatan leakage:</strong> {trainResult.leakage_warning}
+        </div>
+      )}
+
       <div className="card card-pad-lg" style={{ marginBottom: 20 }}>
         <div className="card-header">
           <h3>Perbandingan Model</h3>
+          <span className="chip-mini accent">{trainResult.split_strategy}</span>
         </div>
+        {trainResult.group_column && (
+          <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+            Group Column: <strong style={{ color: 'var(--text-primary)' }}>{trainResult.group_column}</strong>
+            {' '}· {trainResult.n_groups_train} grup train · {trainResult.n_groups_test} grup test
+            {trainResult.cv_strategy && <> · CV: {trainResult.cv_strategy} ({trainResult.cv_folds ?? '-'} fold)</>}
+          </div>
+        )}
         <div className="table-wrap">
           <table className="dt">
             <thead><tr>
@@ -339,8 +366,12 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
               <th className="num">F1</th>
               <th className="num">Precision</th>
               <th className="num">Recall</th>
+              <th className="num">Specificity</th>
+              <th className="num">MCC</th>
               <th className="num">AUC</th>
-              <th className="num">CV Mean</th>
+              <th className="num">PR-AUC</th>
+              <th className="num">CV Mean ± Std</th>
+              {trainResult.group_column && <th className="num">Group Acc / F1</th>}
               <th className="num">Time (s)</th>
             </tr></thead>
             <tbody>
@@ -351,8 +382,14 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
                   <td className="num">{_fmtML(r.f1)}</td>
                   <td className="num">{_fmtML(r.precision)}</td>
                   <td className="num">{_fmtML(r.recall)}</td>
+                  <td className="num">{_fmtML(r.specificity)}</td>
+                  <td className="num">{_fmtML(r.mcc)}</td>
                   <td className="num">{r.auc === null ? '-' : _fmtML(r.auc)}</td>
-                  <td className="num">{r.cv_mean === null ? '-' : _fmtML(r.cv_mean)}</td>
+                  <td className="num">{r.pr_auc === null ? '-' : _fmtML(r.pr_auc)}</td>
+                  <td className="num">{r.cv_mean === null ? '-' : `${_fmtML(r.cv_mean, 3)} ± ${_fmtML(r.cv_std, 3)}`}</td>
+                  {trainResult.group_column && (
+                    <td className="num">{r.group_accuracy === null || r.group_accuracy === undefined ? '-' : `${_fmtML(r.group_accuracy, 3)} / ${_fmtML(r.group_f1, 3)}`}</td>
+                  )}
                   <td className="num"><span className="chip-mini">{r.time_seconds}</span></td>
                 </tr>
               ))}

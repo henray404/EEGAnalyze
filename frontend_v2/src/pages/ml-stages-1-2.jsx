@@ -1,5 +1,5 @@
 /* global React, Icon */
-const { useState: useStateML, useRef: useRefML } = React;
+const { useState: useStateML, useRef: useRefML, useEffect: useEffectML } = React;
 const ApiML = window.Api;
 
 // ===================== STEPPER =====================
@@ -38,11 +38,13 @@ function _formatSizeML(bytes) {
 }
 
 // ===================== STAGE 1: UPLOAD =====================
-function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCols, setFeatureCols }) {
+function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCols, setFeatureCols, groupCol, setGroupCol }) {
   const [uploading, setUploading] = useStateML(false);
   const [error, setError] = useStateML(null);
   const [rawFile, setRawFile] = useStateML(null);
   const fileInputRef = useRefML(null);
+
+  const _looksLikeGroupCol = (name) => /subject|participant|patient|group.?id/i.test(name);
 
   const handleFile = async (f) => {
     if (!f) return;
@@ -55,6 +57,7 @@ function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCo
       const candidate = data.columns.find(c => !c.is_numeric && c.n_unique > 1 && c.n_unique <= 10)
         || data.columns[0];
       setTarget(candidate?.name || '');
+      setGroupCol('');
       setFeatureCols(data.columns.filter(c => c.is_numeric && c.name !== candidate?.name).map(c => c.name));
     } catch (e) {
       setError(e.message || 'Gagal upload');
@@ -71,8 +74,10 @@ function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCo
   };
 
   const allFeatureCols = (dataset?.columns || [])
-    .filter(c => c.is_numeric && c.name !== target)
+    .filter(c => c.is_numeric && c.name !== target && c.name !== groupCol)
     .map(c => c.name);
+  const groupColOptions = (dataset?.columns || []).filter(c => c.name !== target);
+  const suggestedGroupCol = !groupCol && groupColOptions.find(c => _looksLikeGroupCol(c.name));
 
   return (
     <main data-screen-label="05 ML — Upload">
@@ -93,7 +98,7 @@ function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCo
                   <div className="name">{dataset.filename}</div>
                   <div className="meta">{dataset.n_rows.toLocaleString()} rows × {dataset.n_cols} cols{rawFile ? ` · ${_formatSizeML(rawFile.size)}` : ''}</div>
                 </div>
-                <button className="file-card-x" onClick={() => { setDataset(null); setRawFile(null); setTarget(''); setFeatureCols([]); }}><Icon.X /></button>
+                <button className="file-card-x" onClick={() => { setDataset(null); setRawFile(null); setTarget(''); setFeatureCols([]); setGroupCol(''); }}><Icon.X /></button>
               </div>
             ) : (
               <div className="dropzone"
@@ -135,7 +140,36 @@ function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCo
               </select>
               {target && (
                 <div style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--accent-tint)', color: 'var(--accent)', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
-                  <Icon.Info /> Kolom ini akan dijadikan label klasifikasi
+                  <span style={{ display: 'inline-flex', width: 14, height: 14 }}><Icon.Info /></span> Kolom ini akan dijadikan label klasifikasi
+                </div>
+              )}
+            </div>
+
+            <div className="sub-card mb-12">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Group Column (opsional)</div>
+              <select value={groupCol} onChange={e => setGroupCol(e.target.value)}
+                disabled={!dataset}
+                style={{ width: '100%', padding: '12px 16px', background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>
+                <option value="">— tidak ada —</option>
+                {groupColOptions.map(c => (
+                  <option key={c.name} value={c.name}>{c.name} ({c.dtype}, unique={c.n_unique})</option>
+                ))}
+              </select>
+              <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Kalau dataset ini punya banyak baris per subjek (mis. per channel/subband/chunk),
+                pilih kolom ID subjek di sini. Split train/test akan jaga supaya subjek yang sama
+                tidak pernah nyebrang ke dua-duanya sekaligus (mencegah akurasi bohong).
+              </p>
+              {groupCol && (
+                <div style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--accent-tint)', color: 'var(--accent)', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+                  <Icon.Info /> Split akan group-aware berdasarkan kolom ini
+                </div>
+              )}
+              {suggestedGroupCol && (
+                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 11.5, lineHeight: 1.5 }}>
+                  <Icon.Info /> Kolom "{suggestedGroupCol.name}" terlihat seperti ID subjek tapi belum
+                  dipilih sebagai Group Column. Kalau ini benar ID subjek, pilih di atas biar split
+                  train/test tidak bocor.
                 </div>
               )}
             </div>
@@ -364,13 +398,31 @@ function StatCardMini({ label, value, warn }) {
 
 function ClassDistChart({ counts }) {
   const keys = Object.keys(counts);
+  const containerRef = useRefML(null);
+  const [w, setW] = useStateML(700);
+
+  useEffectML(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => setW(el.clientWidth || 700);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   if (keys.length === 0) {
     return <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 20 }}>Belum ada data preview untuk distribusi kelas.</div>;
   }
   const max = Math.max(...Object.values(counts));
-  const w = 400, h = 180, barW = Math.min(80, (w - 80) / keys.length - 20);
+  // w diukur dari lebar container asli (bukan konstanta 400) supaya viewBox
+  // seukuran render sebenarnya -- sebelumnya viewBox 400 dipaksa stretch ke
+  // container ~1300px lewat preserveAspectRatio="none", jadi bar dan sudut
+  // rounded-nya gepeng (distorsi horizontal ~3x).
+  const h = 180, barW = Math.min(80, (w - 80) / keys.length - 20);
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 200 }}>
+    <div ref={containerRef} style={{ width: '100%' }}>
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 200 }}>
       <defs>
         <linearGradient id="alsG3" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#C95466" /><stop offset="100%" stopColor="#B13A4C" />
@@ -397,6 +449,7 @@ function ClassDistChart({ counts }) {
         );
       })}
     </svg>
+    </div>
   );
 }
 

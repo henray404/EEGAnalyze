@@ -1,10 +1,10 @@
-﻿"""
-Modul delta â€” Perhitungan delta antar task.
+"""
+Modul delta — Perhitungan delta antar task.
 
 Mengimplementasikan dua metode:
-1. Delta klasik: (task_a âˆ’ task_b) per file/channel/subband.
+1. Delta klasik: (task_a − task_b) per file/channel/subband.
 2. Delta per-subject (BARU dari pipeline): hitung delta per pasien dulu,
-   lalu rata-rata per group â†’ statistik lebih akurat.
+   lalu rata-rata per group → statistik lebih akurat.
 """
 
 import numpy as np
@@ -21,7 +21,7 @@ class DeltaCalculator:
 
     @staticmethod
     def calculate_task_delta(batch_df, task_a, task_b, feature_cols=None):
-        """Hitung delta (task_a âˆ’ task_b) per filename/channel/subband.
+        """Hitung delta (task_a − task_b) per filename/channel/subband.
 
         Returns
         -------
@@ -75,7 +75,7 @@ class DeltaCalculator:
         return delta_df, agg_df
 
     # ------------------------------------------------------------------ #
-    #  Delta per-subject (BARU â€“ dari pipeline)                           #
+    #  Delta per-subject (BARU – dari pipeline)                           #
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -135,7 +135,7 @@ class DeltaCalculator:
 
         Dari pipeline EEG-ALS-/04_experiment_plot.py:compute_group_transition_deltas().
 
-        Menghitung delta per subject â†’ kemudian mean, SEM, n per group.
+        Menghitung delta per subject → kemudian mean, SEM, n per group.
 
         Returns
         -------
@@ -200,7 +200,7 @@ class DeltaCalculator:
             )
             row = {
                 "subband": sb_name,
-                "transition": f"{from_task} â†’ {to_task}",
+                "transition": f"{from_task} → {to_task}",
             }
             for grp in ["ALS", "Normal"]:
                 prefix = grp.lower()

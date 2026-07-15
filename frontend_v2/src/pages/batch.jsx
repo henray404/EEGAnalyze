@@ -1,6 +1,7 @@
 /* global React, Icon */
 const { useState, useRef: useRefB, useCallback, useEffect } = React;
 const Api = window.Api;
+const ProgressLogB = window.ProgressLog;
 const AppConfigB = window.AppConfig;
 const { FileListTab, ChartTab, TabelTab, HeatmapTab, ScatterTab, DataTableTab, RingkasanTab, EncodingTab } = window;
 
@@ -127,6 +128,8 @@ function BatchPage() {
   const [subjects, setSubjects] = useState([]); // filter subjek (recoveriX)
   const [scenario, setScenario] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [occurrenceTasks, setOccurrenceTasks] = useState([]); // [] = fitur off (semua occurrence digabung, default)
+  const [occurrenceIndex, setOccurrenceIndex] = useState(1);
   const [bandpass, setBandpass] = useState(true); // toggle bandpass (recoveriX; EDF selalu on)
   const [erdMethods, setErdMethods] = useState(['intratrial', 'paired']); // metode ERD recoveriX
   const [subbands, setSubbands] = useState(['delta', 'theta', 'alpha', 'beta']);
@@ -151,6 +154,7 @@ function BatchPage() {
   const [tab, setTab] = useState('chart');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [logs, setLogs] = useState([]);
   const [filesProcessed, setFilesProcessed] = useState(0);
   const [done, setDone] = useState(false);
   const [results, setResults] = useState(null);
@@ -160,8 +164,32 @@ function BatchPage() {
 
   const isRecoverix = dataType === 'recoverix';
   const allChannelsBatch = scanMeta?.channels?.length ? scanMeta.channels : DEFAULT_CHANNELS_B;
-  const allTasksBatch = scanMeta?.tasks?.length ? scanMeta.tasks : ['T1', 'T2', 'T3', 'T4'];
+  const taskFileMap = scanMeta?.task_file_map || {};
+  // allTasksBatch = SEMUA task yang ditemukan (task umum + task yang cuma
+  // ada di sebagian file). Task umum (ada di semua file) sudah pre-selected
+  // lewat scanMeta.tasks (lihat handleScan); task partial ditampilkan juga
+  // di chip tapi user harus pilih manual + lihat cakupan filenya.
+  const allTasksBatch = Object.keys(taskFileMap).length
+    ? Object.keys(taskFileMap).sort()
+    : (scanMeta?.tasks?.length ? scanMeta.tasks : ['T1', 'T2', 'T3', 'T4']);
   const totalFiles = scanMeta?.total_files ?? scanMeta?.total_sessions ?? 0;
+  const taskChipOptions = allTasksBatch.map(t => {
+    const n = (taskFileMap[t] || []).length;
+    const isPartial = totalFiles > 0 && n > 0 && n < totalFiles;
+    return { id: t, name: isPartial ? `${t} (${n}/${totalFiles} file)` : t };
+  });
+  // task_max_occurrence: occurrence terbanyak yang ditemukan tiap task di
+  // seluruh file (batas atas input "occurrence ke-N" -- lihat FilterGroupB
+  // Occurrence di bawah). Hanya task yang punya annotation occurrence yang
+  // muncul di sini.
+  const taskMaxOccurrence = scanMeta?.task_max_occurrence || {};
+  const occurrenceTaskOptions = Object.keys(taskMaxOccurrence).sort();
+  // Batas atas input "ke-N" = paling KECIL di antara task yang dipilih --
+  // kalau melebihi itu, minimal 1 task bakal ke-skip di semua file (masih
+  // "aman" secara teknis, cuma gak berguna kalau semua kepilih ke-skip).
+  const occurrenceMax = occurrenceTasks.length
+    ? Math.min(...occurrenceTasks.map(t => taskMaxOccurrence[t] || 1))
+    : 1;
   const totalSubjects = scanMeta?.subjects?.length || 0;
   const unitLabel = isRecoverix ? 'sesi' : 'file';
 
@@ -209,7 +237,7 @@ function BatchPage() {
 
   const handleProcess = async () => {
     if (!file || !scanned) return;
-    setProcessing(true); setDone(false); setProgress(0); setFilesProcessed(0); setApiError(null);
+    setProcessing(true); setDone(false); setProgress(0); setFilesProcessed(0); setApiError(null); setLogs([]);
     try {
       const data = await Api.batchProcessStream(file, {
         bp_low: AppConfigB.BP_DEFAULT_LOW,
@@ -229,6 +257,8 @@ function BatchPage() {
         include_frequency: true,
         chunk_mode: extractMode === 'chunk',
         chunk_duration: chunkDur,
+        occurrence_tasks: occurrenceTasks.join(','),
+        occurrence_index: occurrenceTasks.length ? occurrenceIndex : null,
         erd_enabled: erdEnabled,
         erd_baseline_task: erdBaseline,
         erd_target_task: erdTarget,
@@ -241,9 +271,12 @@ function BatchPage() {
         filter_scenarios: scenario.join(','),
         filter_tasks: tasks.join(','),
         filter_channels: channels.join(','),
-      }, (processed, total) => {
-        setFilesProcessed(processed);
-        setProgress(total > 0 ? Math.round((processed / total) * 100) : 0);
+      }, {
+        onProgress: (processed, total) => {
+          setFilesProcessed(processed);
+          setProgress(total > 0 ? Math.round((processed / total) * 100) : 0);
+        },
+        onLog: (message, level) => setLogs(prev => [...prev, { message, level }]),
       });
       setResults(data);
       setFilesProcessed(data.processed_files ?? data.processed_sessions ?? totalFiles);
@@ -440,7 +473,20 @@ function BatchPage() {
                 {!isRecoverix ? (
                   <FilterGroupB label="Task" counter={`${tasks.length}/${allTasksBatch.length} dipilih`}
                     action={<ChipAllRow options={allTasksBatch} onChange={setTasks} />}>
-                    <ChipGroupB options={allTasksBatch} value={tasks} onChange={setTasks} />
+                    <ChipGroupB options={taskChipOptions} value={tasks} onChange={setTasks} />
+                    {tasks.filter(t => {
+                      const n = (taskFileMap[t] || []).length;
+                      return totalFiles > 0 && n > 0 && n < totalFiles;
+                    }).map(t => {
+                      const files = taskFileMap[t] || [];
+                      const shown = files.slice(0, 5);
+                      const more = files.length - shown.length;
+                      return (
+                        <div key={t} style={{ fontSize: 11, color: 'var(--warning, #C0392B)', marginTop: 6 }}>
+                          Task "{t}" cuma ada di {files.length}/{totalFiles} file: {shown.join(', ')}{more > 0 ? ` +${more} lainnya` : ''}
+                        </div>
+                      );
+                    })}
                   </FilterGroupB>
                 ) : (
                   <FilterGroupB label="Task">
@@ -448,6 +494,32 @@ function BatchPage() {
                       {allTasksBatch.map(t => <span key={t} className="chip selected" style={{ opacity: 0.7 }}>{t}</span>)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>recoveriX: kondisi Left/Right tetap.</div>
+                  </FilterGroupB>
+                )}
+                {!isRecoverix && (
+                  <FilterGroupB label="Occurrence" counter={occurrenceTasks.length ? `${occurrenceTasks.length}/${occurrenceTaskOptions.length} dipilih` : undefined}>
+                    <ToggleRowB on={occurrenceTasks.length > 0} onChange={(on) => setOccurrenceTasks(on ? [occurrenceTaskOptions[0]].filter(Boolean) : [])} label="Ambil occurrence ke-N dari task tertentu" />
+                    {occurrenceTasks.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                        <div>
+                          <div className="row-between" style={{ marginBottom: 4 }}>
+                            <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Task</span>
+                            <ChipAllRow options={occurrenceTaskOptions} onChange={setOccurrenceTasks} />
+                          </div>
+                          <ChipGroupB options={occurrenceTaskOptions} value={occurrenceTasks} onChange={setOccurrenceTasks} />
+                        </div>
+                        <div className="row gap-8" style={{ alignItems: 'center' }}>
+                          <span style={{ fontSize: 12, fontWeight: 600 }}>ke-</span>
+                          <input className="input" type="number" min="1" max={occurrenceMax} value={occurrenceIndex}
+                            onChange={e => setOccurrenceIndex(Math.min(occurrenceMax, Math.max(1, parseInt(e.target.value) || 1)))}
+                            style={{ width: 80 }} />
+                          <span className="chip-mini">maks {occurrenceMax}</span>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      Nonaktif = semua occurrence tiap task digabung jadi satu (default), pakai filter Task di atas. Aktif = pilih 1+ task + occurrence ke berapa (mis. "Resting ke-1" dan "Thinking ke-1" sekaligus) -- diambil per file berdasarkan urutan task itu sendiri (bukan posisi absolut), lepas dari filter Task di atas. Task yang occurrence-nya kurang dari N dilewati untuk file itu.
+                    </div>
                   </FilterGroupB>
                 )}
                 <FilterGroupB label="Subband" counter={`${subbands.length}/${SUBBANDS_B.length} dipilih`}
@@ -692,10 +764,13 @@ function BatchPage() {
               </div>
             ) : processing ? (
               <div className="canvas">
-                <div className="empty">
-                  <BatchEmptyArt />
-                  <h4>Memproses {filesProcessed} / {totalFiles} file...</h4>
-                  <p>Pipeline paralel menjalankan ekstraksi fitur per record.</p>
+                <div style={{ padding: '48px 24px' }}>
+                  <ProgressLogB
+                    title="MEMPROSES BATCH"
+                    subtitle={`Memproses ${filesProcessed} / ${totalFiles} ${unitLabel}...`}
+                    logs={logs}
+                    progress={progress}
+                  />
                 </div>
               </div>
             ) : (
@@ -838,6 +913,7 @@ function BatchErdTab({ results, baseline, target }) {
   const [page, setPage] = useState(0);
   const [catFilter, setCatFilter] = useState('all');
   const [sbFilter, setSbFilter] = useState('all');
+  const [exportError, setExportError] = useState(null);
   const pageSize = 25;
 
   if (records.length === 0) {
@@ -892,12 +968,24 @@ function BatchErdTab({ results, baseline, target }) {
           </button>
           <button className="btn btn-primary" onClick={async () => {
             const fname = `batch_erd_${Date.now()}.xlsx`;
-            try { const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+            setExportError(null);
+            try {
+              const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname);
+              window.downloadBlob(blob, fname);
+            } catch (e) {
+              console.error('[BatchErdTab] Export Excel gagal:', e);
+              setExportError(e.message || 'Export gagal');
+            }
           }}>
             <Icon.Download /> Excel
           </button>
         </div>
       </div>
+      {exportError && (
+        <div style={{ margin: '0 0 16px', padding: '8px 14px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12 }}>
+          {exportError}
+        </div>
+      )}
       <div className="row mb-16" style={{ gap: 8 }}>
         <select className="fpill" value={catFilter} onChange={e => { setCatFilter(e.target.value); setPage(0); }}
           style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid var(--border)' }}>

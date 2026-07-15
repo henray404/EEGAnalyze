@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.processing import recoverix
+from app.processing.io import recoverix
 
 
 # ----- helper pembuat data sintetik ----- #
@@ -153,7 +153,7 @@ def _make_session_zip():
 
 
 def test_load_recoverix_zip_builds_raw():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     loader = EEGLoader()
     info = loader.load_recoverix_zip(_make_session_zip())
 
@@ -170,7 +170,7 @@ def test_load_recoverix_zip_builds_raw():
 
 
 def test_load_recoverix_zip_rejects_non_recoverix():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w") as zf:
         zf.writestr("data/foo.txt", "bukan recoveriX")
@@ -181,14 +181,14 @@ def test_load_recoverix_zip_rejects_non_recoverix():
 
 
 def test_load_recoverix_zip_sets_cue_offset():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     loader = EEGLoader()
     loader.load_recoverix_zip(_make_session_zip())
     assert loader.cue_offset_s == 500 / 250  # trigger_pos / sfreq
 
 
 def test_eegloader_default_cue_offset_is_none():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     assert EEGLoader().cue_offset_s is None
 
 
@@ -210,8 +210,8 @@ def make_bin_split(pre_samples, post_samples, pre_amp, post_amp,
 
 
 def test_compute_erd_ers_intratrial_basic():
-    from app.processing.loader import EEGLoader
-    from app.processing.features import EEGFeatures
+    from app.processing.io.loader import EEGLoader
+    from app.processing.features.features import EEGFeatures
 
     sfreq = 250
     pre_n, post_n = 500, 1500  # 2s pre-cue, 6s post-cue
@@ -245,7 +245,7 @@ def test_compute_erd_ers_intratrial_basic():
 
 
 def test_compute_erd_ers_intratrial_no_cue_offset():
-    from app.processing.features import EEGFeatures
+    from app.processing.features.features import EEGFeatures
     result = EEGFeatures.compute_erd_ers_intratrial(
         None, pd.DataFrame(), ["C0"], "Left", cue_offset_s=None,
     )
@@ -349,7 +349,7 @@ def _make_multi_session_zip():
 
 
 def test_list_recoverix_sessions_in_zip():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     sessions = EEGLoader.list_recoverix_sessions_in_zip(_make_multi_session_zip())
     assert len(sessions) == 2
     assert sessions[0]["session_dir"] == "sessA"
@@ -359,7 +359,7 @@ def test_list_recoverix_sessions_in_zip():
 
 
 def test_load_recoverix_session_isolates_sessions():
-    from app.processing.loader import EEGLoader
+    from app.processing.io.loader import EEGLoader
     zbuf = _make_multi_session_zip()
     sessions = EEGLoader.list_recoverix_sessions_in_zip(zbuf)
 

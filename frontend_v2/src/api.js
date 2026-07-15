@@ -14,119 +14,149 @@ function _buildForm(fields) {
   return form;
 }
 
-async function _postForm(path, fields) {
-  const res = await fetch(_api(path), { method: 'POST', body: _buildForm(fields) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-  return data;
-}
+// Semua endpoint proses sekarang STREAMING NDJSON (StreamingResponse di backend):
+// tiap baris satu event JSON { type: log | progress | result | error }.
+// _streamJob() consume stream itu, panggil hooks.onLog / hooks.onProgress
+// real-time, dan return payload event 'result' terakhir (tanpa field 'type').
+//
+// hooks (opsional):
+//   onLog(message, level)             -> tiap baris log teks
+//   onProgress(processed, total, msg) -> tiap update progress bar
+//
+// Kalau backend gagal SEBELUM stream mulai (mis. validasi pre-flight
+// HTTPException), response-nya JSON biasa non-2xx -> ditangani di cabang !res.ok.
+async function _streamJob(path, { fields, jsonBody, hooks = {} } = {}) {
+  const url = _api(path);
+  const { onLog, onProgress } = hooks;
+  const options = jsonBody !== undefined
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jsonBody) }
+    : { method: 'POST', body: _buildForm(fields || {}) };
 
-async function _postJson(path, body) {
-  const res = await fetch(_api(path), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-  return data;
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkErr) {
+    console.error(`[API] Gagal fetch ke ${url}`, networkErr);
+    throw new Error(
+      `Tidak bisa terhubung ke backend di ${window.AppConfig.API_BASE}. `
+      + `Cek: (1) backend server nyala (uvicorn), (2) URL/port di config.js benar, `
+      + `(3) tab Network di DevTools (F12) buat lihat request yang gagal. `
+      + `Detail browser: ${networkErr.message}`
+    );
+  }
+
+  if (!res.ok || !res.body) {
+    const rawText = await res.text();
+    let detail = null;
+    try { detail = JSON.parse(rawText).detail; } catch { /* biarkan */ }
+    console.error(`[API] HTTP ${res.status} dari ${url}:`, rawText.slice(0, 500));
+    throw new Error(detail || `HTTP ${res.status} dari ${url}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let result = null;
+
+  const handleLine = (line) => {
+    const s = line.trim();
+    if (!s) return;
+    let evt;
+    try { evt = JSON.parse(s); } catch { return; }
+    if (evt.type === 'log') {
+      if (onLog) onLog(evt.message, evt.level || 'info');
+    } else if (evt.type === 'progress') {
+      if (onProgress) onProgress(evt.processed, evt.total, evt.message);
+      // pesan pada event progress (dari emit.step) juga muncul di panel log.
+      if (evt.message && onLog) onLog(evt.message, 'info');
+    } else if (evt.type === 'result') {
+      result = evt;
+    } else if (evt.type === 'error') {
+      throw new Error(evt.detail || 'Gagal memproses');
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      handleLine(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+  }
+  handleLine(buf);
+
+  if (!result) throw new Error('Tidak ada hasil dari server');
+  const { type, ...payload } = result;
+  return payload;
 }
 
 window.Api = {
-  // ===== Single File =====
-  singleUpload(file) {
-    return _postForm('/api/single/upload', { file });
+  // ===== Single File ===== (semua streaming; arg terakhir `hooks` opsional)
+  singleUpload(file, hooks) {
+    return _streamJob('/api/single/upload', { fields: { file }, hooks });
   },
-  singleProcess(file, opts) {
-    return _postForm('/api/single/process', { file, ...opts });
+  singleProcess(file, opts, hooks) {
+    return _streamJob('/api/single/process', { fields: { file, ...opts }, hooks });
   },
-  singlePlotRaw(file, channels, t_start, t_dur, annotation_filter, annotation_filter_active) {
-    return _postForm('/api/single/plot/raw', { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active });
+  singlePlotRaw(file, channels, t_start, t_dur, annotation_filter, annotation_filter_active, hooks) {
+    return _streamJob('/api/single/plot/raw', { fields: { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active }, hooks });
   },
-  singlePlotFiltered(file, channels, t_start, t_dur, opts, annotation_filter, annotation_filter_active) {
-    return _postForm('/api/single/plot/filtered', { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active, ...opts });
+  singlePlotFiltered(file, channels, t_start, t_dur, opts, annotation_filter, annotation_filter_active, hooks) {
+    return _streamJob('/api/single/plot/filtered', { fields: { file, channels, t_start, t_dur, annotation_filter, annotation_filter_active, ...opts }, hooks });
   },
-  singlePlotSubband(file, channel, t_start, t_dur, subbands, opts, annotation_filter, annotation_filter_active) {
-    return _postForm('/api/single/plot/subband', { file, channel, t_start, t_dur, subbands, annotation_filter, annotation_filter_active, ...opts });
+  singlePlotSubband(file, channel, t_start, t_dur, subbands, opts, annotation_filter, annotation_filter_active, hooks) {
+    return _streamJob('/api/single/plot/subband', { fields: { file, channel, t_start, t_dur, subbands, annotation_filter, annotation_filter_active, ...opts }, hooks });
   },
-  singlePlotIca(file, opts) {
-    return _postForm('/api/single/plot/ica', { file, ...opts });
+  singlePlotIca(file, opts, hooks) {
+    return _streamJob('/api/single/plot/ica', { fields: { file, ...opts }, hooks });
   },
-  singleErd(file, opts) {
-    return _postForm('/api/single/erd', { file, ...opts });
+  singleErd(file, opts, hooks) {
+    return _streamJob('/api/single/erd', { fields: { file, ...opts }, hooks });
   },
 
   // ===== Batch =====
-  batchScan(file) {
-    return _postForm('/api/batch/scan', { file });
+  batchScan(file, hooks) {
+    return _streamJob('/api/batch/scan', { fields: { file }, hooks });
   },
-  batchProcess(file, opts) {
-    return _postForm('/api/batch/process', { file, ...opts });
-  },
-  // Streaming NDJSON: panggil onProgress(processed, total) tiap file selesai,
-  // return payload result terakhir. Progress nyata, bukan estimasi.
-  async batchProcessStream(file, opts, onProgress, path = '/api/batch/process') {
-    const res = await fetch(_api(path), {
-      method: 'POST', body: _buildForm({ file, ...opts }),
-    });
-    if (!res.ok || !res.body) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || `HTTP ${res.status}`);
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    let result = null;
-
-    const handleLine = (line) => {
-      const s = line.trim();
-      if (!s) return;
-      let evt;
-      try { evt = JSON.parse(s); } catch { return; }
-      if (evt.type === 'progress') {
-        if (onProgress) onProgress(evt.processed, evt.total);
-      } else if (evt.type === 'result') {
-        result = evt;
-      } else if (evt.type === 'error') {
-        throw new Error(evt.detail || 'Batch gagal');
-      }
-    };
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        handleLine(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-      }
-    }
-    handleLine(buf);
-
-    if (!result) throw new Error('Tidak ada hasil dari server');
-    return result;
+  // Streaming NDJSON: hooks.onProgress(processed, total) tiap file/sesi selesai,
+  // hooks.onLog(msg) tiap baris log. Return payload result terakhir.
+  batchProcessStream(file, opts, hooks, path = '/api/batch/process') {
+    return _streamJob(path, { fields: { file, ...opts }, hooks });
   },
 
   // ===== ML =====
-  mlUpload(file) {
-    return _postForm('/api/ml/upload', { file });
+  mlUpload(file, hooks) {
+    return _streamJob('/api/ml/upload', { fields: { file }, hooks });
   },
-  mlTrain(payload) {
-    return _postJson('/api/ml/train', payload);
+  mlTrain(payload, hooks) {
+    return _streamJob('/api/ml/train', { jsonBody: payload, hooks });
   },
-  mlPredict(file, model_id) {
-    return _postForm('/api/ml/predict', { file, model_id });
+  mlPredict(file, model_id, hooks) {
+    return _streamJob('/api/ml/predict', { fields: { file, model_id }, hooks });
   },
 
   // ===== Export =====
   async exportExcel(sheets, filename) {
-    const res = await fetch(_api('/api/export/excel'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sheets, filename }),
-    });
-    if (!res.ok) throw new Error('Excel export failed');
+    const url = _api('/api/export/excel');
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheets, filename }),
+      });
+    } catch (networkErr) {
+      console.error(`[API] Gagal fetch ke ${url}`, networkErr);
+      throw new Error(`Tidak bisa terhubung ke backend di ${window.AppConfig.API_BASE}. Detail: ${networkErr.message}`);
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.error(`[API] HTTP ${res.status} dari ${url}:`, data);
+      throw new Error(data.detail || `Excel export gagal (HTTP ${res.status})`);
+    }
     return res.blob();
   },
 

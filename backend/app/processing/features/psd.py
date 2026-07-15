@@ -1,5 +1,5 @@
-﻿"""
-Modul psd â€” Analisis Power Spectral Density (PSD).
+"""
+Modul psd — Analisis Power Spectral Density (PSD).
 
 Mendukung metode Welch dan Multitaper.
 Menyediakan:
@@ -7,6 +7,8 @@ Menyediakan:
 - PSD per-task (dari annotations)
 - Ekstraksi band power numerik dari PSD
 """
+
+import logging
 
 import numpy as np
 import pandas as pd
@@ -29,7 +31,7 @@ except AttributeError:
 def _auto_n_fft(sfreq, n_samples, n_fft=None):
     """Tentukan n_fft otomatis.
 
-    - Jika n_fft=None  â†’ 2 Ã— sfreq (resolusi 0.5 Hz)
+    - Jika n_fft=None  → 2 × sfreq (resolusi 0.5 Hz)
     - n_fft tidak boleh melebihi panjang data
     - Minimal 64 agar PSD tidak terlalu kasar
 
@@ -54,7 +56,7 @@ class PSDAnalyzer:
     @staticmethod
     def compute_psd_array(data, sfreq, method="welch",
                           fmin=0.0, fmax=49.0, n_fft=None):
-        """Hitung PSD dari array numpy 2-D (n_channels Ã— n_samples).
+        """Hitung PSD dari array numpy 2-D (n_channels × n_samples).
 
         Parameters
         ----------
@@ -67,7 +69,7 @@ class PSDAnalyzer:
         fmin, fmax : float
             Rentang frekuensi yang dikembalikan.
         n_fft : int | None
-            Panjang FFT.  None = otomatis (2 Ã— sfreq).
+            Panjang FFT.  None = otomatis (2 × sfreq).
 
         Returns
         -------
@@ -147,8 +149,9 @@ class PSDAnalyzer:
                 n_jobs=1, verbose=False,
             )
             return psds, freqs
-        except Exception:
-            # Fallback ke Welch jika Multitaper gagal
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Multitaper PSD gagal (%s), fallback ke Welch", e)
             return PSDAnalyzer._psd_welch(data, sfreq, fmin, fmax, n_fft)
 
     # ------------------------------------------------------------------ #

@@ -648,6 +648,7 @@ function EncodingTab({ results, onDownloadEncoding, onDownloadEncodingExcel, exp
   const tasks    = _uniqueNonEmpty(enc.map(r => r.task));
   const subbands = _uniqueNonEmpty(enc.map(r => r.subband));
   const channels = _uniqueNonEmpty(enc.map(r => r.channel));
+  const hasOccurrence = enc.some(r => r.occurrence != null);
 
   // detect chain feature columns (chain_mav_sequence, chain_mav_ratio, etc.)
   const firstRow = enc[0] || {};
@@ -703,6 +704,7 @@ function EncodingTab({ results, onDownloadEncoding, onDownloadEncodingExcel, exp
                 <th>Category</th>
                 <th>Subject</th>
                 <th>Task</th>
+                {hasOccurrence && <th>Occurrence</th>}
                 <th>Channel</th>
                 <th>Subband</th>
                 {chainFeats.map(f => (
@@ -719,6 +721,7 @@ function EncodingTab({ results, onDownloadEncoding, onDownloadEncodingExcel, exp
                   <td>{r.category ?? '-'}</td>
                   <td>{r.subject ?? '-'}</td>
                   <td>{r.task ?? '-'}</td>
+                  {hasOccurrence && <td>{r.occurrence ?? '-'}</td>}
                   <td>{r.channel}</td>
                   <td><span className="badge badge-accent">{r.subband}</span></td>
                   {chainFeats.map(f => (
@@ -734,7 +737,7 @@ function EncodingTab({ results, onDownloadEncoding, onDownloadEncodingExcel, exp
                 </tr>
               ))}
               {pageRows.length === 0 && (
-                <tr><td colSpan={5 + chainFeats.length * 2} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
+                <tr><td colSpan={5 + (hasOccurrence ? 1 : 0) + chainFeats.length * 2} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
                   Tidak ada data sesuai filter
                 </td></tr>
               )}

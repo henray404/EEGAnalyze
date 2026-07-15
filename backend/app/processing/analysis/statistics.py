@@ -10,8 +10,12 @@ Fitur:
 - Normalisasi per subjek
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 from scipy.stats import mannwhitneyu, ttest_ind, sem
 
 
@@ -229,7 +233,8 @@ class StatisticalTests:
                         _, p = mannwhitneyu(als_vals, norm_vals,
                                             alternative="two-sided")
                         row[f"p_{feat_name}"] = p
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Mann-Whitney U gagal untuk fitur %s: %s", feat_name, e)
                         row[f"p_{feat_name}"] = np.nan
                 else:
                     row[f"p_{feat_name}"] = np.nan
@@ -240,7 +245,8 @@ class StatisticalTests:
                         t_stat, t_pval = ttest_ind(als_vals, norm_vals)
                         row[f"t_stat_{feat_name}"] = float(t_stat)
                         row[f"t_pval_{feat_name}"] = float(t_pval)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("T-test gagal untuk fitur %s: %s", feat_name, e)
                         row[f"t_stat_{feat_name}"] = np.nan
                         row[f"t_pval_{feat_name}"] = np.nan
 
@@ -274,7 +280,7 @@ class StatisticalTests:
                         )
                         fdr_col = pc.replace("p_", "p_fdr_")
                         stats_df[fdr_col] = adjusted
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("FDR correction gagal untuk kolom %s: %s", pc, e)
 
         return compare_df, stats_df

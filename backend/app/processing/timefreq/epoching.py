@@ -1,5 +1,5 @@
-﻿"""
-Modul epoching â€” Epoching dan Sliding Windows untuk data EEG.
+"""
+Modul epoching — Epoching dan Sliding Windows untuk data EEG.
 
 Menyediakan:
 - Fixed-length epoching (potong data jadi klip-klip durasi tetap)
@@ -96,7 +96,7 @@ class EpochEngine:
         window_size : float
             Lebar jendela dalam detik.
         overlap : float
-            Rasio overlap (0.0 â€“ 0.75). Misal 0.5 = 50% overlap.
+            Rasio overlap (0.0 – 0.75). Misal 0.5 = 50% overlap.
 
         Returns
         -------
@@ -205,7 +205,7 @@ class EpochEngine:
         channels : list[str]
             Channel yang dicek.
         threshold_uv : float
-            Threshold dalam ÂµV. None = default dari config.
+            Threshold dalam µV. None = default dari config.
         sfreq : float | None
             Sampling frequency (untuk info log). Tidak dipakai langsung.
 
@@ -219,7 +219,7 @@ class EpochEngine:
         if threshold_uv is None:
             threshold_uv = DEFAULT_EPOCH_REJECT_UV
 
-        # MNE menyimpan data dalam Volt, konversi threshold ÂµV â†’ V
+        # MNE menyimpan data dalam Volt, konversi threshold µV → V
         threshold_v = threshold_uv * 1e-6
 
         clean = []
@@ -267,7 +267,7 @@ class EpochEngine:
             Kolom: channel, subband, + fitur (mean dari semua epoch),
             + fitur_std (std dari semua epoch), n_epochs.
         """
-        from app.processing.features import EEGFeatures
+        from app.processing.features.features import EEGFeatures
 
         if subbands is None:
             subbands = DEFAULT_SUBBANDS
@@ -338,7 +338,7 @@ class EpochEngine:
             Kolom: window_idx, start_time, end_time,
             channel, subband, + fitur.
         """
-        from app.processing.features import EEGFeatures
+        from app.processing.features.features import EEGFeatures
 
         if subbands is None:
             subbands = DEFAULT_SUBBANDS
@@ -382,7 +382,7 @@ class EpochEngine:
                                       psd_fmax=49.0, psd_n_fft=None):
         """Hitung fitur per task menggunakan epoching.
 
-        Alur: task segment â†’ epoch â†’ reject â†’ compute per epoch â†’ mean
+        Alur: task segment → epoch → reject → compute per epoch → mean
 
         Returns
         -------

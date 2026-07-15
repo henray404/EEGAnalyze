@@ -1,20 +1,28 @@
 import io
 import os
-import json
-import math
 import asyncio
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from typing import Optional
 
-from app.processing import recoverix
-from app.processing.loader import EEGLoader
-from app.processing.filters import EEGFilters
-from app.processing.features import EEGFeatures
-from app.processing.chunking import ChunkingPipeline
+from app.processing.io import recoverix
+from app.processing.io.loader import EEGLoader
+from app.processing.filtering.filters import EEGFilters
+from app.processing.features.features import EEGFeatures
+from app.processing.features.chunking import ChunkingPipeline
 from app.config import DEFAULT_SUBBANDS
+from app.routers._shared import (
+    to_bool as _to_bool,
+    parse_csv_list as _parse_csv_list,
+    resolve_subbands as _resolve_subbands,
+    resolve_features as _resolve_features,
+    resolve_nth_occurrence as _resolve_nth_occurrence,
+    _sanitize,
+    _jdump,
+    ndjson_job,
+)
 
 RECOVERIX_TASKS = ["Left", "Right"]
 
@@ -23,26 +31,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _sanitize(o):
-    """Ubah NaN/Infinity (float non-finite) jadi None secara rekursif.
+def _emit_result_log(emit, name, res):
+    """Emit satu baris log NDJSON tiap file/sesi selesai diproses.
 
-    json.dumps stdlib emit token `NaN`/`Infinity` yang BUKAN JSON valid,
-    sehingga JSON.parse di browser gagal dan event result terbuang diam-diam
-    ("Tidak ada hasil dari server"). Data EEG asli bisa hasilkan NaN/Inf
-    (mis. power 0 -> pembagian), jadi semua payload dibersihkan dulu.
+    name = nama file/sesi, res = dict hasil worker (punya 'records'/'error').
     """
-    if isinstance(o, float):
-        return o if math.isfinite(o) else None
-    if isinstance(o, dict):
-        return {k: _sanitize(v) for k, v in o.items()}
-    if isinstance(o, list):
-        return [_sanitize(v) for v in o]
-    return o
-
-
-def _jdump(obj):
-    """Serialize ke JSON aman: NaN/Inf -> null."""
-    return json.dumps(_sanitize(obj))
+    if res and res.get("error"):
+        emit({"type": "log", "level": "warn",
+              "message": f"{name}: gagal ({str(res['error'])[:80]})"})
+    else:
+        nrec = len(res.get("records", [])) if res else 0
+        emit({"type": "log", "message": f"{name}: {nrec} record"})
 
 
 # ------------------------------------------------------------------ #
@@ -57,6 +56,14 @@ _WORKER_ZIP_BYTES = None
 def _init_worker(zip_bytes):
     global _WORKER_ZIP_BYTES
     _WORKER_ZIP_BYTES = zip_bytes
+    # ProcessPoolExecutor (spawn) tidak mewarisi logging config proses utama
+    # (main.py) -- worker fresh-import modulnya sendiri. Konfigurasi ulang di
+    # sini biar logger.warning() di dalam worker (_process_one_file dkk) ikut
+    # keluar dengan format yang sama, bukan cuma handler default polos.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
 
 def _process_one_file(payload):
@@ -107,10 +114,42 @@ def _process_one_file(payload):
         channels = [c for c in all_channels
                     if not cfg["ch_filter"] or c in cfg["ch_filter"]]
 
-        if not tasks or not channels:
+        if not channels:
             return out
 
-        if cfg["chunk_mode"]:
+        # Occurrence ke-N: selector berdiri sendiri (task + index spesifik),
+        # TIDAK bergantung pada filter Task umum di atas. Task yang
+        # occurrence-nya kurang dari N dilewati (file itu return kosong),
+        # bukan error -- konsisten dengan compute_occurrence_features.
+        occurrence_tasks = cfg.get("occurrence_tasks") or []
+        occurrence_index = cfg.get("occurrence_index")
+
+        if occurrence_tasks and occurrence_index:
+            selected_occ = _resolve_nth_occurrence(
+                loader, occurrence_tasks, occurrence_index)
+            if not selected_occ:
+                return out
+            if cfg["chunk_mode"]:
+                feat_df = ChunkingPipeline.compute_occurrence_chunked_features(
+                    loader, df, channels, list(selected_occ),
+                    chunk_duration=cfg["chunk_duration"],
+                    subbands=cfg["subbands"],
+                    features=cfg["features"],
+                )
+            else:
+                feat_df = EEGFeatures.compute_occurrence_features(
+                    loader, df, channels, occurrence_tasks,
+                    subbands=cfg["subbands"],
+                    features=cfg["features"],
+                    include_frequency=cfg["include_frequency"],
+                    psd_method=cfg["psd_method"],
+                    psd_fmin=cfg["psd_fmin"],
+                    psd_fmax=cfg["psd_fmax"],
+                    selected_occ=selected_occ,
+                )
+        elif not tasks:
+            return out
+        elif cfg["chunk_mode"]:
             # parallel=False: parallelisasi sudah di level file (pool ini).
             feat_df = ChunkingPipeline.compute_task_chunked_features(
                 loader, df, channels, tasks,
@@ -146,8 +185,8 @@ def _process_one_file(payload):
                     for rec in summary_df.to_dict(orient="records"):
                         out["encoding"].append(
                             {**meta, "filename": edf_path, **rec})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Chain encoding gagal untuk file %s: %s", edf_path, e)
 
         if cfg["erd_enabled"] and cfg["erd_baseline_task"] and cfg["erd_target_task"]:
             try:
@@ -168,8 +207,8 @@ def _process_one_file(payload):
                     for rec in erd_df.to_dict(orient="records"):
                         out["erd"].append(
                             {**meta, "filename": edf_path, **rec})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("ERD gagal untuk file %s: %s", edf_path, e)
 
         if (cfg.get("erd_compare_enabled") and cfg["chunk_mode"]
                 and cfg.get("erd_compare_tasks")):
@@ -185,8 +224,8 @@ def _process_one_file(payload):
                         for rec in erd_c_df.to_dict(orient="records"):
                             out["erd_compare"].append(
                                 {**meta, "filename": edf_path, **rec})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("ERD compare gagal untuk file %s: %s", edf_path, e)
 
     except Exception as e:
         out["error"] = str(e)
@@ -279,74 +318,106 @@ async def scan_zip(file: UploadFile = File(...)):
     """Scan ZIP: extract metadata dari SEMUA file tanpa full processing.
 
     - category, subject, scenario: dari folder path structure (cepat, tanpa load EDF)
-    - tasks, channels: load satu EDF representatif per kategori (lebih akurat)
+    - tasks, channels: cek task list SETIAP file (preload=False, cuma baca
+      header+annotations, bukan sample data) supaya task yang ditawarkan ke
+      user memang valid untuk semua file, bukan cuma satu representatif.
 
     Return:
-      total_files, files, categories, subjects, scenarios, tasks, channels
+      total_files, files, categories, subjects, scenarios, tasks (task yang
+      ada di SEMUA file), task_file_map (task -> daftar file yang punya task
+      itu, termasuk task yang cuma sebagian file punya), channels
     """
-    if not file.filename.lower().endswith(".zip"):
+    fname = file.filename or ""
+    if not fname.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="File harus berformat .zip")
 
     zip_bytes = await file.read()
-    zip_buffer = io.BytesIO(zip_bytes)
 
-    try:
-        edf_files = EEGLoader.list_edf_in_zip(zip_buffer)
-    except Exception:
-        raise HTTPException(status_code=422, detail="ZIP rusak atau tidak valid")
-
-    if not edf_files:
-        # Bukan ZIP EDF: coba deteksi sesi recoveriX.
-        zip_buffer.seek(0)
-        return _scan_recoverix_zip(zip_buffer)
-
-    # --- Pass 1: ekstrak metadata dari folder path (tanpa load EDF) ---
-    categories, subjects, scenarios = set(), set(), set()
-    meta_by_file: dict = {}
-
-    for edf_path in edf_files:
-        meta = EEGLoader.detect_category(edf_path)
-        meta_by_file[edf_path] = meta
-        categories.add(meta["category"])
-        subjects.add(meta["subject"])
-        if meta["scenario"]:
-            scenarios.add(meta["scenario"])
-
-    # --- Pass 2: load satu EDF per kategori untuk channels + tasks ---
-    # Pilih satu representatif per kategori agar tasks & channels konsisten
-    representative: dict = {}  # category -> edf_path
-    for edf_path, meta in meta_by_file.items():
-        cat = meta["category"]
-        if cat not in representative:
-            representative[cat] = edf_path
-
-    all_tasks: set = set()
-    channels: list = []
-
-    for cat, edf_path in representative.items():
+    def job(emit):
+        zip_buffer = io.BytesIO(zip_bytes)
+        emit.log("Membaca isi ZIP...")
         try:
+            edf_files = EEGLoader.list_edf_in_zip(zip_buffer)
+        except Exception as e:
+            logger.warning("Gagal baca ZIP %s: %s", fname, e)
+            raise HTTPException(status_code=422, detail="ZIP rusak atau tidak valid")
+
+        if not edf_files:
+            # Bukan ZIP EDF: coba deteksi sesi recoveriX.
+            emit.log("Bukan ZIP EDF, cek sesi recoveriX...")
             zip_buffer.seek(0)
-            loader = EEGLoader()
-            loader.load_edf_from_zip(zip_buffer, edf_path)
-            all_tasks.update(loader.get_task_list())
-            if not channels:
-                channels = loader.channel_names
-        except Exception:
-            continue
+            return _scan_recoverix_zip(zip_buffer, emit)
 
-    return JSONResponse(content={
-        "data_type": "edf",
-        "total_files": len(edf_files),
-        "files": edf_files,
-        "categories": sorted(categories),
-        "subjects": sorted(subjects),
-        "scenarios": sorted(scenarios),
-        "tasks": sorted(all_tasks),
-        "channels": channels,
-    })
+        emit.log(f"{len(edf_files)} file EDF ditemukan")
+
+        # --- Pass 1: ekstrak metadata dari folder path (tanpa load EDF) ---
+        categories, subjects, scenarios = set(), set(), set()
+        meta_by_file: dict = {}
+
+        for edf_path in edf_files:
+            meta = EEGLoader.detect_category(edf_path)
+            meta_by_file[edf_path] = meta
+            categories.add(meta["category"])
+            subjects.add(meta["subject"])
+            if meta["scenario"]:
+                scenarios.add(meta["scenario"])
+
+        # --- Pass 2: cek task list SETIAP file (preload=False, ringan) ---
+        # task_file_map dipakai frontend buat bedain task yang ada di semua file
+        # (aman dipilih) vs task yang cuma sebagian file punya (tetap bisa
+        # dipilih, tapi user perlu tahu file mana aja yang bakal kepakai).
+        task_file_map: dict = {}
+        task_max_occurrence: dict = {}
+        channels: list = []
+        loaded_ok = 0
+
+        emit.progress(0, len(edf_files))
+        for edf_path in edf_files:
+            try:
+                zip_buffer.seek(0)
+                loader = EEGLoader()
+                loader.load_edf_from_zip(zip_buffer, edf_path, preload=False)
+                loaded_ok += 1
+                for t in loader.get_task_list():
+                    task_file_map.setdefault(t, []).append(edf_path)
+                # Occurrence ke-berapa paling banyak ditemukan tiap task, dipakai
+                # frontend buat batas atas input "occurrence ke-N" (lihat
+                # resolve_nth_occurrence -- file yang occurrence-nya kurang dari
+                # N akan dilewati saat proses, bukan error).
+                for occ in loader.get_task_occurrences():
+                    t = occ["task"]
+                    task_max_occurrence[t] = max(
+                        task_max_occurrence.get(t, 0), occ["occurrence"])
+                if not channels:
+                    channels = loader.channel_names
+                emit.step(edf_path)
+            except Exception as e:
+                logger.warning("Scan gagal load file %s (dilewati): %s", edf_path, e)
+                emit.step(f"{edf_path}: dilewati (gagal baca)")
+                continue
+
+        common_tasks = sorted(
+            t for t, files in task_file_map.items() if len(files) == loaded_ok
+        ) if loaded_ok else []
+
+        emit.log(f"Scan selesai: {loaded_ok}/{len(edf_files)} file terbaca")
+        return {
+            "data_type": "edf",
+            "total_files": len(edf_files),
+            "files": edf_files,
+            "categories": sorted(categories),
+            "subjects": sorted(subjects),
+            "scenarios": sorted(scenarios),
+            "tasks": common_tasks,
+            "task_file_map": {t: sorted(files) for t, files in task_file_map.items()},
+            "task_max_occurrence": task_max_occurrence,
+            "channels": channels,
+        }
+
+    return ndjson_job(job)
 
 
-def _scan_recoverix_zip(zip_buffer):
+def _scan_recoverix_zip(zip_buffer, emit=None):
     """Scan ZIP multi-sesi recoveriX: daftar sesi + metadata + channels.
 
     Dipanggil oleh /scan saat ZIP tidak berisi EDF. Return data_type
@@ -359,6 +430,8 @@ def _scan_recoverix_zip(zip_buffer):
             detail="ZIP tidak berisi file EDF maupun sesi recoveriX (rawData*.tar.gz)",
         )
 
+    if emit:
+        emit.log(f"{len(sessions_raw)} sesi recoveriX ditemukan")
     sessions, subjects, scenarios = [], set(), set()
     for s in sessions_raw:
         meta = recoverix.parse_session_path(s["session_dir"])
@@ -374,10 +447,11 @@ def _scan_recoverix_zip(zip_buffer):
             loader.load_recoverix_session(zip_buffer, s["tar_names"])
             channels = loader.channel_names
             break
-        except Exception:
+        except Exception as e:
+            logger.warning("Scan gagal load sesi recoveriX %s (dilewati): %s", s.get("session_dir"), e)
             continue
 
-    return JSONResponse(content={
+    return {
         "data_type": "recoverix",
         "total_sessions": len(sessions),
         "sessions": sessions,
@@ -385,39 +459,9 @@ def _scan_recoverix_zip(zip_buffer):
         "scenarios": sorted(scenarios),
         "tasks": list(RECOVERIX_TASKS),
         "channels": channels,
-    })
-
-
-_SUBBAND_MAP = {
-    "delta": "Delta", "theta": "Theta", "mu": "Mu",
-    "alpha": "Alpha", "low_beta": "Low_Beta",
-    "beta": "Beta", "high_beta": "High_Beta", "gamma": "Gamma",
-}
-
-
-def _resolve_subbands(ids_str: str) -> dict:
-    ids = [s.strip().lower() for s in ids_str.split(",") if s.strip()]
-    return {
-        _SUBBAND_MAP[i]: DEFAULT_SUBBANDS[_SUBBAND_MAP[i]]
-        for i in ids
-        if i in _SUBBAND_MAP and _SUBBAND_MAP[i] in DEFAULT_SUBBANDS
-    } or dict(DEFAULT_SUBBANDS)
-
-
-def _resolve_features(feats_str: str) -> list:
-    mapping = {
-        "mav": "mav", "variance": "variance", "std": "std",
-        "band_power": "band_power", "relative_power": "relative_power",
-        "peak_frequency": "peak_frequency",
-        "psd": "band_power", "erd": "band_power", "ers": "relative_power",
     }
-    seen, result = set(), []
-    for f in feats_str.split(","):
-        key = f.strip().lower()
-        if key in mapping and mapping[key] not in seen:
-            seen.add(mapping[key])
-            result.append(mapping[key])
-    return result or ["mav", "variance", "std"]
+
+
 
 
 def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_filter):
@@ -475,6 +519,7 @@ def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_fil
                                 "error": str(e),
                             }
                         done += 1
+                        _emit_result_log(emit, payloads[i][0], results[i])
                         emit({"type": "progress", "processed": done, "total": total})
             except Exception as exc:
                 logger.warning(
@@ -485,6 +530,7 @@ def _process_recoverix_batch(zip_bytes, sessions_raw, cfg, subj_filter, scen_fil
                     if results[i] is None:
                         results[i] = _process_one_session(payloads[i])
                     done += 1
+                    _emit_result_log(emit, payloads[i][0], results[i])
                     emit({"type": "progress", "processed": done, "total": total})
             finally:
                 emit({"type": "_done"})
@@ -558,6 +604,8 @@ async def process_batch(
     recoverix_erd_methods: str = Form("intratrial,paired"),
     chunk_mode: str = Form("false"),
     chunk_duration: float = Form(0.5),
+    occurrence_tasks: str = Form(""),
+    occurrence_index: Optional[int] = Form(None),
     erd_enabled: str = Form("false"),
     erd_baseline_task: str = Form(""),
     erd_target_task: str = Form(""),
@@ -572,9 +620,6 @@ async def process_batch(
     """
     if not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="File harus berformat .zip")
-
-    def to_bool(s: str) -> bool:
-        return str(s).lower() == "true"
 
     zip_bytes = await file.read()
     zip_buffer = io.BytesIO(zip_bytes)
@@ -601,11 +646,11 @@ async def process_batch(
             )
         rcfg = {
             "bp_low": bp_low, "bp_high": bp_high, "bp_order": bp_order,
-            "use_bandpass": to_bool(use_bandpass),
-            "use_notch": to_bool(use_notch), "notch_freq": notch_freq,
-            "use_car": to_bool(use_car), "use_amplitude": to_bool(use_amplitude),
-            "detect_bad": to_bool(detect_bad),
-            "use_ica": to_bool(use_ica), "ica_method": ica_method, "ica_n": ica_n,
+            "use_bandpass": _to_bool(use_bandpass),
+            "use_notch": _to_bool(use_notch), "notch_freq": notch_freq,
+            "use_car": _to_bool(use_car), "use_amplitude": _to_bool(use_amplitude),
+            "detect_bad": _to_bool(detect_bad),
+            "use_ica": _to_bool(use_ica), "ica_method": ica_method, "ica_n": ica_n,
             "subbands": selected_subbands, "features": selected_features,
             "ch_filter": ch_filter,
             "recoverix_erd_methods": [
@@ -620,19 +665,20 @@ async def process_batch(
     # Config dipaketkan sekali (picklable) lalu dipakai semua worker.
     cfg = {
         "bp_low": bp_low, "bp_high": bp_high, "bp_order": bp_order,
-        "use_notch": to_bool(use_notch), "notch_freq": notch_freq,
-        "use_car": to_bool(use_car), "use_amplitude": to_bool(use_amplitude),
-        "detect_bad": to_bool(detect_bad),
-        "use_ica": to_bool(use_ica), "ica_method": ica_method, "ica_n": ica_n,
+        "use_notch": _to_bool(use_notch), "notch_freq": notch_freq,
+        "use_car": _to_bool(use_car), "use_amplitude": _to_bool(use_amplitude),
+        "detect_bad": _to_bool(detect_bad),
+        "use_ica": _to_bool(use_ica), "ica_method": ica_method, "ica_n": ica_n,
         "subbands": selected_subbands, "features": selected_features,
-        "include_frequency": to_bool(include_frequency),
+        "include_frequency": _to_bool(include_frequency),
         "psd_method": psd_method, "psd_fmin": psd_fmin, "psd_fmax": psd_fmax,
         "tasks_filter": tasks_filter, "ch_filter": ch_filter,
-        "chunk_mode": to_bool(chunk_mode), "chunk_duration": chunk_duration,
-        "erd_enabled": to_bool(erd_enabled),
+        "chunk_mode": _to_bool(chunk_mode), "chunk_duration": chunk_duration,
+        "occurrence_tasks": _parse_csv_list(occurrence_tasks), "occurrence_index": occurrence_index,
+        "erd_enabled": _to_bool(erd_enabled),
         "erd_baseline_task": erd_baseline_task,
         "erd_target_task": erd_target_task,
-        "erd_compare_enabled": to_bool(erd_compare_enabled),
+        "erd_compare_enabled": _to_bool(erd_compare_enabled),
         "erd_compare_baseline": erd_compare_baseline,
         "erd_compare_tasks": [t.strip() for t in erd_compare_tasks.split(",") if t.strip()],
     }
@@ -648,7 +694,7 @@ async def process_batch(
         payloads.append((edf_path, meta, cfg))
 
     total = len(payloads)
-    chunk_mode_b = to_bool(chunk_mode)
+    chunk_mode_b = _to_bool(chunk_mode)
 
     async def event_generator():
         """Yield NDJSON: event progress per file selesai, lalu event result.
@@ -697,6 +743,7 @@ async def process_batch(
                                 "error": str(e),
                             }
                         done += 1
+                        _emit_result_log(emit, payloads[i][0], results[i])
                         emit({"type": "progress",
                               "processed": done, "total": total})
             except Exception as exc:
@@ -709,6 +756,7 @@ async def process_batch(
                     if results[i] is None:
                         results[i] = _process_one_file(payloads[i])
                     done += 1
+                    _emit_result_log(emit, payloads[i][0], results[i])
                     emit({"type": "progress",
                           "processed": done, "total": total})
             finally:

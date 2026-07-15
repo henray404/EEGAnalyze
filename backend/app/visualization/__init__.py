@@ -1,5 +1,5 @@
-﻿"""
-Visualization package â€” Chart / plot generators.
+"""
+Visualization package — Chart / plot generators.
 
 Modul:
 - signal_plots     : Sinyal mentah, PSD, distribusi

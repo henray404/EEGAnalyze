@@ -1,5 +1,5 @@
-﻿"""
-Modul signal_plots â€” Visualisasi sinyal mentah, PSD, distribusi.
+"""
+Modul signal_plots — Visualisasi sinyal mentah, PSD, distribusi.
 """
 
 import numpy as np
@@ -8,24 +8,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 from app.config import CHANNEL_COLORS, TASK_COLORS, ACCENT_LIGHT
-
-# Template dasar Plotly untuk dark mode
-_TEMPLATE = "plotly_dark"
-_PLOT_BG = "rgba(0,0,0,0)"
-_PAPER_BG = "rgba(0,0,0,0)"
-
-
-def _base_layout(**kwargs):
-    """Merge layout defaults untuk semua chart."""
-    base = dict(
-        template=_TEMPLATE,
-        plot_bgcolor=_PLOT_BG,
-        paper_bgcolor=_PAPER_BG,
-        font=dict(family="Inter, sans-serif", color="#E2E8F0"),
-        margin=dict(l=50, r=20, t=44, b=40),
-    )
-    base.update(kwargs)
-    return base
+from app.visualization._theme import base_layout as _base_layout, PLOT_GRID_COLOR
 
 
 class SignalPlots:
@@ -57,12 +40,12 @@ class SignalPlots:
             )
             fig.update_yaxes(
                 title_text=ch, row=i + 1, col=1,
-                gridcolor="#1E293B", zerolinecolor="#1E293B",
+                gridcolor=PLOT_GRID_COLOR, zerolinecolor=PLOT_GRID_COLOR,
             )
 
         fig.update_xaxes(
             title_text="Waktu (s)", row=len(channels), col=1,
-            gridcolor="#1E293B",
+            gridcolor=PLOT_GRID_COLOR,
         )
         fig.update_layout(**_base_layout(
             title=title, height=180 * len(channels), showlegend=False,
@@ -95,7 +78,7 @@ class SignalPlots:
         n_fft : int | None
         title : str | None
         """
-        from app.processing.psd import PSDAnalyzer
+        from app.processing.features.psd import PSDAnalyzer
 
         psds, freqs, ch_names = PSDAnalyzer.compute_psd_raw(
             raw, method=method, fmin=fmin, fmax=fmax, n_fft=n_fft,
@@ -116,8 +99,8 @@ class SignalPlots:
             title=title, xaxis_title="Frekuensi (Hz)",
             yaxis_title="Power (dB)", height=380,
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -180,12 +163,12 @@ class SignalPlots:
         for ch_idx in range(n_channels):
             fig.update_yaxes(
                 title_text="Power (dB)", row=ch_idx + 1, col=1,
-                gridcolor="#1E293B",
+                gridcolor=PLOT_GRID_COLOR,
             )
 
         fig.update_xaxes(
             title_text="Frekuensi (Hz)", row=n_channels, col=1,
-            gridcolor="#1E293B",
+            gridcolor=PLOT_GRID_COLOR,
         )
         fig.update_layout(**_base_layout(
             title=title,
@@ -221,8 +204,8 @@ class SignalPlots:
             },
         )
         fig.update_layout(**_base_layout(title=title, height=400))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     # ------------------------------------------------------------------ #
@@ -246,8 +229,8 @@ class SignalPlots:
             barmode="overlay", title=title, height=380,
             xaxis_title="Amplitudo", yaxis_title="Frekuensi",
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -281,8 +264,8 @@ class SignalPlots:
             title=title, height=350, showlegend=False,
             xaxis_title="Marker", yaxis_title="Jumlah",
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     # ------------------------------------------------------------------ #
@@ -392,8 +375,8 @@ class SignalPlots:
             },
         )
         fig.update_layout(**_base_layout(title=title, height=400))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     # ------------------------------------------------------------------ #
@@ -419,7 +402,7 @@ class SignalPlots:
         go.Figure
         """
         if title is None:
-            parts = [f"Connectivity ({method.upper()}) â€” {subband}"]
+            parts = [f"Connectivity ({method.upper()}) — {subband}"]
             if task:
                 parts.append(f"Task: {task}")
             title = " | ".join(parts)
@@ -492,7 +475,7 @@ class SignalPlots:
             )
 
         fig.update_layout(**_base_layout(
-            title=f"Perbandingan {method.upper()} â€” Subband {subband}",
+            title=f"Perbandingan {method.upper()} — Subband {subband}",
             height=420,
         ))
         return fig

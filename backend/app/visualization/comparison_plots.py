@@ -1,5 +1,5 @@
-﻿"""
-Modul comparison_plots â€” Delta bar/scatter/heatmap, ALS vs Normal.
+"""
+Modul comparison_plots — Delta bar/scatter/heatmap, ALS vs Normal.
 
 Enhanced: Mendukung SEM error bars dan t-test annotation dari pipeline.
 """
@@ -11,22 +11,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 from app.config import CHANNEL_COLORS, ACCENT_LIGHT
-
-_TEMPLATE = "plotly_dark"
-_PLOT_BG = "rgba(0,0,0,0)"
-_PAPER_BG = "rgba(0,0,0,0)"
-
-
-def _base_layout(**kwargs):
-    base = dict(
-        template=_TEMPLATE,
-        plot_bgcolor=_PLOT_BG,
-        paper_bgcolor=_PAPER_BG,
-        font=dict(family="Inter, sans-serif", color="#E2E8F0"),
-        margin=dict(l=50, r=20, t=44, b=40),
-    )
-    base.update(kwargs)
-    return base
+from app.visualization._theme import base_layout as _base_layout, PLOT_GRID_COLOR
 
 
 class ComparisonPlots:
@@ -40,7 +25,7 @@ class ComparisonPlots:
         if agg_df.empty or col_mean not in agg_df.columns:
             return None
         if title is None:
-            title = f"Î” {feature_name.capitalize()} ({task_a} â€“ {task_b})"
+            title = f"Δ {feature_name.capitalize()} ({task_a} – {task_b})"
 
         plot_df = agg_df.copy()
         plot_df["label"] = plot_df["channel"] + " / " + plot_df["subband"]
@@ -65,10 +50,10 @@ class ComparisonPlots:
         fig.update_layout(**_base_layout(
             title=title, height=440, showlegend=False,
             xaxis_title="Channel / Subband",
-            yaxis_title=f"Î” {feature_name}",
+            yaxis_title=f"Δ {feature_name}",
         ))
-        fig.update_xaxes(gridcolor="#1E293B", tickangle=-45)
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR, tickangle=-45)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -78,14 +63,14 @@ class ComparisonPlots:
         if agg_df.empty or col_mean not in agg_df.columns:
             return None
         if title is None:
-            title = f"Heatmap Î” {feature_name.capitalize()} ({task_a} â€“ {task_b})"
+            title = f"Heatmap Δ {feature_name.capitalize()} ({task_a} – {task_b})"
 
         pivot = agg_df.pivot_table(
             index="channel", columns="subband", values=col_mean,
         )
         fig = px.imshow(
             pivot, text_auto=".2e", color_continuous_scale="RdBu_r",
-            labels=dict(x="Subband", y="Channel", color=f"Î” {feature_name}"),
+            labels=dict(x="Subband", y="Channel", color=f"Δ {feature_name}"),
         )
         fig.update_layout(**_base_layout(title=title, height=400))
         return fig
@@ -97,7 +82,7 @@ class ComparisonPlots:
         if delta_df.empty or col not in delta_df.columns:
             return None
         if title is None:
-            title = f"Top 20 Î” {feature_name.capitalize()} per File ({task_a} â€“ {task_b})"
+            title = f"Top 20 Δ {feature_name.capitalize()} per File ({task_a} – {task_b})"
 
         plot_df = delta_df.copy()
         plot_df["label"] = (
@@ -120,10 +105,10 @@ class ComparisonPlots:
         fig.update_layout(**_base_layout(
             title=title, height=max(400, 26 * len(plot_df)),
             showlegend=False, yaxis=dict(autorange="reversed"),
-            xaxis_title=f"Î” {feature_name}",
+            xaxis_title=f"Δ {feature_name}",
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     # ------------------------------------------------------------------ #
@@ -153,8 +138,8 @@ class ComparisonPlots:
 
         if title is None:
             title = (
-                f"Î” {feature_name.capitalize()}: ALS vs Normal "
-                f"({active_task} âˆ’ {baseline_task})"
+                f"Δ {feature_name.capitalize()}: ALS vs Normal "
+                f"({active_task} − {baseline_task})"
             )
 
         channels = sorted(stats_df["channel"].unique())
@@ -208,7 +193,7 @@ class ComparisonPlots:
                         max_y = max(
                             abs(row[col_als] or 0), abs(row[col_norm] or 0)
                         )
-                        star = "â˜…" if p <= 0.05 else f"p={p:.3f}"
+                        star = "★" if p <= 0.05 else f"p={p:.3f}"
                         fig.add_annotation(
                             x=row["subband"],
                             y=max_y * 1.15,
@@ -224,11 +209,11 @@ class ComparisonPlots:
         fig.update_layout(**_base_layout(
             title=title, height=480, barmode="group",
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         if channels:
             fig.update_yaxes(
-                title_text=f"Mean Î” {feature_name}", row=1, col=1,
+                title_text=f"Mean Δ {feature_name}", row=1, col=1,
             )
         return fig
 
@@ -244,7 +229,7 @@ class ComparisonPlots:
         if transition_df.empty:
             return None
         if title is None:
-            title = f"Transition Delta â€” {feature_name.capitalize()}"
+            title = f"Transition Delta — {feature_name.capitalize()}"
 
         fig = go.Figure()
 
@@ -277,9 +262,9 @@ class ComparisonPlots:
         fig.update_layout(**_base_layout(
             title=title, height=440, barmode="group",
             xaxis_title="Subband",
-            yaxis_title=f"Mean Î” {feature_name}",
+            yaxis_title=f"Mean Δ {feature_name}",
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 

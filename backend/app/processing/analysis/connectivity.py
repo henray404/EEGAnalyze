@@ -1,5 +1,5 @@
-﻿"""
-Modul connectivity â€” Analisis konektivitas fungsional EEG (PLI / wPLI).
+"""
+Modul connectivity — Analisis konektivitas fungsional EEG (PLI / wPLI).
 
 Menggunakan mne-connectivity untuk komputasi spectral connectivity.
 Menyediakan:
@@ -177,7 +177,7 @@ class ConnectivityAnalyzer:
         Parameters
         ----------
         conn_dict : dict
-            subband_name -> np.ndarray (n_channels Ã— n_channels)
+            subband_name -> np.ndarray (n_channels × n_channels)
         channels : list[str]
         method : str
         task_name : str | None

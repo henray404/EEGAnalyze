@@ -1,6 +1,7 @@
 /* global React, Icon, Plotly */
 const { useState, useRef, useEffect } = React;
 const Api = window.Api;
+const ProgressLog = window.ProgressLog;
 const AppConfig = window.AppConfig;
 
 class ErrorBoundary extends React.Component {
@@ -147,8 +148,6 @@ function SingleFilePage() {
 
   const [selectedChannels, setSelectedChannels] = useState([]);
   const [expandAllChannels, setExpandAllChannels] = useState(false);
-  const [filterMode, setFilterMode] = useState('preset');
-  const [bpSubbands, setBpSubbands] = useState(['alpha', 'beta']);
   const [bpLow, setBpLow] = useState(AppConfig.BP_DEFAULT_LOW);
   const [bpHigh, setBpHigh] = useState(AppConfig.BP_DEFAULT_HIGH);
   const [bpOrder, setBpOrder] = useState(AppConfig.BP_DEFAULT_ORDER);
@@ -176,6 +175,7 @@ function SingleFilePage() {
 
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [procLogs, setProcLogs] = useState([]);
   const [done, setDone] = useState(false);
   const [results, setResults] = useState(null);
   const [apiError, setApiError] = useState(null);
@@ -211,20 +211,12 @@ function SingleFilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedOccs]);
 
-  // Preset mode: bandpass global mengikuti gabungan subband yang dipilih di
-  // chip "Preset Subband" (bpSubbands). Sebelumnya chip ini tak pernah dibaca
-  // sehingga preset diam-diam memakai full range 0.5-49 Hz.
-  const presetBpRange = () => {
-    const sel = SUBBANDS.filter(s => bpSubbands.includes(s.id) && s.low != null);
-    if (!sel.length) return [AppConfig.BP_DEFAULT_LOW, AppConfig.BP_DEFAULT_HIGH];
-    return [Math.min(...sel.map(s => s.low)), Math.max(...sel.map(s => s.high))];
-  };
 
   // Seleksi occurrence bisa "utuh per task" (semua/none occurrence suatu task
-  // terpilih) -> setara mode lama "Per Task", backend tetap dukung chunking.
-  // Begitu ada task yang cuma sebagian occurrence-nya terpilih (isolasi
-  // occurrence spesifik, mis. cuma "Thinking #1"), backend wajib pakai mode
-  // occurrence murni (full-data per occurrence, chunk tidak berlaku di sana).
+  // terpilih) -> setara mode lama "Per Task". Begitu ada task yang cuma
+  // sebagian occurrence-nya terpilih (isolasi occurrence spesifik, mis. cuma
+  // "Thinking #1"), backend pakai mode occurrence murni -- chunk + chain
+  // encoding tetap didukung, disegmentasi per occurrence itu sendiri.
   const isWholeTaskSelection = () => {
     const occs = meta?.occurrences || [];
     if (occs.length === 0) return true;
@@ -246,8 +238,8 @@ function SingleFilePage() {
         ))
       : [];
     return {
-      bp_low: filterMode === 'preset' ? presetBpRange()[0] : bpLow,
-      bp_high: filterMode === 'preset' ? presetBpRange()[1] : bpHigh,
+      bp_low: bpLow,
+      bp_high: bpHigh,
       bp_order: bpOrder,
       use_notch: notchOn,
       notch_freq: notchHz,
@@ -310,12 +302,16 @@ function SingleFilePage() {
     setProcessing(true);
     setDone(false);
     setProgress(0);
+    setProcLogs([]);
     setApiError(null);
     setResults(null);
-    const ticker = setInterval(() => setProgress(p => Math.min(p + 2, 90)), 250);
+    const procHooks = {
+      onProgress: (d, t) => setProgress(t > 0 ? Math.round((d / t) * 100) : 0),
+      onLog: (message, level) => setProcLogs(prev => [...prev, { message, level }]),
+    };
     try {
       const opts = buildProcessOpts();
-      const data = await Api.singleProcess(file, opts);
+      const data = await Api.singleProcess(file, opts, procHooks);
 
       if (erdEnabled && erdTarget && (erdIntraTrial || erdBaseline)) {
         try {
@@ -331,7 +327,7 @@ function SingleFilePage() {
             chunk_mode: extractMode === 'chunk',
             chunk_duration: chunkDur,
             intra_trial: erdIntraTrial,
-          });
+          }, procHooks);
           data.erd_records = erdData.erd_records || [];
           if (data.erd_records.length === 0) {
             data.erd_error = erdIntraTrial
@@ -350,7 +346,6 @@ function SingleFilePage() {
     } catch (e) {
       setApiError(e.message || 'Gagal memproses');
     } finally {
-      clearInterval(ticker);
       setProgress(100);
       setProcessing(false);
     }
@@ -419,6 +414,30 @@ function SingleFilePage() {
   const handleDownloadCSV = () => {
     if (!results || !results.features || results.features.length === 0) return;
     window.downloadCSV(results.features, `single_file_features_${Date.now()}.csv`);
+  };
+
+  const [encodingExporting, setEncodingExporting] = useState(false);
+
+  const handleDownloadEncodingCSV = () => {
+    if (!results?.encoding_records?.length) return;
+    window.downloadCSV(results.encoding_records, `single_file_encoding_${Date.now()}.csv`);
+  };
+
+  const handleExportEncodingExcel = async () => {
+    if (!results?.encoding_records?.length || encodingExporting) return;
+    setEncodingExporting(true);
+    setApiError(null);
+    const fname = `single_file_encoding_${Date.now()}.xlsx`;
+    try {
+      const blob = await Api.exportExcel(
+        window.recordsToScenarioSheets(results.encoding_records, 'Encoding'), fname,
+      );
+      window.downloadBlob(blob, fname);
+    } catch (e) {
+      setApiError(e.message || 'Export Excel gagal');
+    } finally {
+      setEncodingExporting(false);
+    }
   };
 
   const handlePlotAndSwitch = async (kind) => {
@@ -598,27 +617,17 @@ function SingleFilePage() {
                   <span style={{ fontSize: 13.5, fontWeight: 600 }}>Bandpass Filter</span>
                   <span className="sub-card-chevron" aria-hidden="true">▾</span>
                 </div>
-                <div className="chip-group mb-12">
-                  <button className={`chip ${filterMode === 'preset' ? 'selected' : ''}`} onClick={() => setFilterMode('preset')}>Preset Subband</button>
-                  <button className={`chip ${filterMode === 'custom' ? 'selected' : ''}`} onClick={() => setFilterMode('custom')}>Custom Range</button>
+                <div className="input-grid-2 mb-12">
+                  <input className="input" type="number" step="0.1" value={bpLow}
+                    onChange={e => setBpLow(parseFloat(e.target.value) || 0)} placeholder="Low (Hz)" />
+                  <input className="input" type="number" step="0.1" value={bpHigh}
+                    onChange={e => setBpHigh(parseFloat(e.target.value) || 0)} placeholder="High (Hz)" />
                 </div>
-                {filterMode === 'preset' ? (
-                  <ChipGroup options={SUBBANDS} value={bpSubbands} onChange={setBpSubbands} />
-                ) : (
-                  <>
-                    <div className="input-grid-2 mb-12">
-                      <input className="input" type="number" step="0.1" value={bpLow}
-                        onChange={e => setBpLow(parseFloat(e.target.value) || 0)} placeholder="Low (Hz)" />
-                      <input className="input" type="number" step="0.1" value={bpHigh}
-                        onChange={e => setBpHigh(parseFloat(e.target.value) || 0)} placeholder="High (Hz)" />
-                    </div>
-                    <div className="row gap-8" style={{ alignItems: 'center' }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>Order:</span>
-                      <input className="input" type="number" min="1" max="10" value={bpOrder}
-                        onChange={e => setBpOrder(parseInt(e.target.value) || 5)} style={{ width: 80 }} />
-                    </div>
-                  </>
-                )}
+                <div className="row gap-8" style={{ alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>Order:</span>
+                  <input className="input" type="number" min="1" max="10" value={bpOrder}
+                    onChange={e => setBpOrder(parseInt(e.target.value) || 5)} style={{ width: 80 }} />
+                </div>
                 <button className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }} onClick={() => handlePlotAndSwitch('filtered')} disabled={!file || plotLoading || selectedChannels.length === 0}><Icon.Wave /> Plot Filtered Signal</button>
               </div>
 
@@ -681,11 +690,7 @@ function SingleFilePage() {
               {extractMode === 'chunk' && (
                 <Slider min={0.25} max={2.0} value={chunkDur} onChange={setChunkDur} label={`Durasi Chunk: ${chunkDur} s`} snapPoints={[0.25, 0.5, 1.0, 1.5, 2.0]} />
               )}
-              {extractMode === 'chunk' && !isWholeTaskSelection() && (
-                <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-                  Chunk tidak berlaku untuk seleksi occurrence spesifik (mis. cuma "Thinking #1") — akan diproses sebagai Full Data untuk occurrence itu.
-                </div>
-              )}
+
               <div className="form-row">
                 <label>Pilih fitur statistik</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -794,6 +799,7 @@ function SingleFilePage() {
                 { id: 'subband', label: 'Subband Plots' },
                 { id: 'ica', label: 'ICA Components' },
                 { id: 'fitur', label: 'Hasil Fitur' },
+                ...(results?.mode === 'chunk' ? [{ id: 'encoding', label: 'Encoding' }] : []),
               ].map(t => (
                 <button key={t.id}
                   className={`tab-pill ${tab === t.id ? 'active' : ''}`}
@@ -845,12 +851,23 @@ function SingleFilePage() {
               <ErrorBoundary>
                 <FiturTab
                   done={done} processing={processing}
+                  progress={progress} procLogs={procLogs}
                   results={results} error={apiError}
                   extractMode={extractMode} chunkDur={chunkDur}
                   erdEnabled={erdEnabled}
                   erdBaseline={erdBaseline} erdTarget={erdTarget} erdIntraTrial={erdIntraTrial}
                   onDownloadCSV={handleDownloadCSV}
                   onDownloadExcel={handleExportExcel}
+                />
+              </ErrorBoundary>
+            )}
+            {tab === 'encoding' && (
+              <ErrorBoundary>
+                <EncodingSection
+                  results={results}
+                  onDownloadEncoding={handleDownloadEncodingCSV}
+                  onDownloadEncodingExcel={handleExportEncodingExcel}
+                  exporting={encodingExporting}
                 />
               </ErrorBoundary>
             )}
@@ -1118,6 +1135,7 @@ function pickColumns(records) {
 }
 
 function ErdTable({ records, baseline, target }) {
+  const [exportError, setExportError] = useState(null);
   const subbands = Array.from(new Set(records.map(r => r.subband).filter(Boolean)));
   const channels = Array.from(new Set(records.map(r => r.channel).filter(Boolean)));
   const hasChunk = records.some(r => r.chunk != null);
@@ -1142,12 +1160,24 @@ function ErdTable({ records, baseline, target }) {
           </button>
           <button className="btn btn-primary" onClick={async () => {
             const fname = `erd_${Date.now()}.xlsx`;
-            try { const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname); window.downloadBlob(blob, fname); } catch (e) { alert(e.message || 'Export gagal'); }
+            setExportError(null);
+            try {
+              const blob = await window.Api.exportExcel(window.recordsToScenarioSheets(records, 'ERD_ERS'), fname);
+              window.downloadBlob(blob, fname);
+            } catch (e) {
+              console.error('[ErdTable] Export Excel gagal:', e);
+              setExportError(e.message || 'Export gagal');
+            }
           }}>
             <Icon.Download /> Excel
           </button>
         </div>
       </div>
+      {exportError && (
+        <div style={{ margin: '0 0 12px', padding: '8px 14px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12 }}>
+          {exportError}
+        </div>
+      )}
       <div className="table-wrap">
         <table className="dt">
           <thead>
@@ -1185,7 +1215,7 @@ function ErdTable({ records, baseline, target }) {
   );
 }
 
-function FiturTab({ done, processing, results, error, extractMode, chunkDur, erdEnabled, erdBaseline, erdTarget, erdIntraTrial, onDownloadCSV, onDownloadExcel }) {
+function FiturTab({ done, processing, progress, procLogs, results, error, extractMode, chunkDur, erdEnabled, erdBaseline, erdTarget, erdIntraTrial, onDownloadCSV, onDownloadExcel }) {
   const [page, setPage] = useState(0);
   const [taskFilter, setTaskFilter] = useState('all');
   const [subbandFilter, setSubbandFilter] = useState('all');
@@ -1206,10 +1236,13 @@ function FiturTab({ done, processing, results, error, extractMode, chunkDur, erd
   if (processing) {
     return (
       <div className="canvas">
-        <div className="empty">
-          <EmptyArtChart />
-          <h4>Memproses fitur...</h4>
-          <p>Pipeline berjalan: bandpass, subband, ekstraksi fitur.</p>
+        <div style={{ padding: '48px 24px' }}>
+          <ProgressLog
+            title="EKSTRAKSI FITUR"
+            subtitle="Memproses fitur..."
+            logs={procLogs || []}
+            progress={progress}
+          />
         </div>
       </div>
     );
@@ -1321,6 +1354,26 @@ function FiturTab({ done, processing, results, error, extractMode, chunkDur, erd
       )}
     </div>
   );
+}
+
+// EncodingTab didefinisikan di batch-tabs.jsx dan di-attach ke window supaya
+// dipakai bareng batch & single-file (chain encoding sama persis). Lookup
+// dilakukan di render (bukan destructure top-level) karena single-file.jsx
+// di-load index.html SEBELUM batch-tabs.jsx.
+function EncodingSection(props) {
+  const Comp = window.EncodingTab;
+  if (!Comp) {
+    return (
+      <div className="canvas">
+        <div className="empty">
+          <EmptyArtChart />
+          <h4>Encoding tab belum siap</h4>
+          <p>batch-tabs.jsx belum termuat.</p>
+        </div>
+      </div>
+    );
+  }
+  return <Comp {...props} />;
 }
 
 function StatStrip({ label, value, delta, trend }) {

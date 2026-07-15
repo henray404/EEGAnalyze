@@ -1,32 +1,34 @@
-﻿"""
-Processing package â€” backend pemrosesan EEG.
+"""
+Processing package -- backend pemrosesan EEG.
 
-Modul:
-- loader     : Load EDF, ZIP, deteksi metadata
-- filters    : Bandpass, notch, ICA, bad channel detection
-- features   : Ekstraksi fitur (time-domain + frequency-domain)
-- psd        : Analisis Power Spectral Density (Welch / Multitaper)
-- epoching   : Epoching & Sliding Windows
-- connectivity: Konektivitas fungsional (PLI / wPLI)
-- delta      : Delta antar task
-- statistics : Uji statistik (Mann-Whitney, t-test, Cohen's d, FDR)
+Sub-package (mengikuti alur pipeline di CLAUDE.md: Load -> Filter -> Ekstraksi
+Fitur -> Analisis):
+- io         : Load EDF/TXT/ZIP, deteksi metadata (loader, recoverix)
+- filtering  : Bandpass, notch, ICA, bad channel detection (filters)
+- features   : Ekstraksi fitur full-data & chunked + PSD (features, chunking, psd)
+- timefreq   : Time-frequency & trial-epoch (superlets, gamma_bursts, epoching,
+               encoding) -- belum di-wire ke router manapun
+- analysis   : Statistik & lintas-task/lintas-grup (delta, statistics,
+               connectivity, comparison) -- belum di-wire ke router manapun
 """
 
-from app.processing.loader import EEGLoader
-from app.processing.filters import EEGFilters
-from app.processing.features import EEGFeatures
-from app.processing.psd import PSDAnalyzer
-from app.processing.epoching import EpochEngine
-from app.processing.connectivity import ConnectivityAnalyzer
-from app.processing.delta import DeltaCalculator
-from app.processing.statistics import StatisticalTests
-from app.processing.superlets import SuperletTFR
-from app.processing.gamma_bursts import GammaBurstDetector
+from app.processing.io.loader import EEGLoader
+from app.processing.filtering.filters import EEGFilters
+from app.processing.features.features import EEGFeatures
+from app.processing.features.chunking import ChunkingPipeline
+from app.processing.features.psd import PSDAnalyzer
+from app.processing.timefreq.epoching import EpochEngine
+from app.processing.timefreq.superlets import SuperletTFR
+from app.processing.timefreq.gamma_bursts import GammaBurstDetector
+from app.processing.analysis.connectivity import ConnectivityAnalyzer
+from app.processing.analysis.delta import DeltaCalculator
+from app.processing.analysis.statistics import StatisticalTests
 
 __all__ = [
     "EEGLoader",
     "EEGFilters",
     "EEGFeatures",
+    "ChunkingPipeline",
     "PSDAnalyzer",
     "EpochEngine",
     "ConnectivityAnalyzer",
@@ -35,6 +37,3 @@ __all__ = [
     "SuperletTFR",
     "GammaBurstDetector",
 ]
-
-
-

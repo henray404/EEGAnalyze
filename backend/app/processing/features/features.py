@@ -1,5 +1,5 @@
-﻿"""
-Modul features â€” Ekstraksi fitur EEG per channel/subband.
+"""
+Modul features — Ekstraksi fitur EEG per channel/subband.
 
 Fitur baru dari pipeline EEG-ALS- (03_extract_features.py):
 - Band power (absolute)
@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.signal import butter, sosfiltfilt
 
 from app.config import DEFAULT_SUBBANDS, DEFAULT_FEATURES, BAND_RATIOS
-from app.processing.psd import PSDAnalyzer
+from app.processing.features.psd import PSDAnalyzer
 
 
 def _bandpass_array(data, sfreq, low, high, order=5):
@@ -39,7 +39,7 @@ class EEGFeatures:
     """Kumpulan metode untuk ekstraksi fitur EEG."""
 
     # ------------------------------------------------------------------ #
-    #  Band power (BARU â€“ dari pipeline)                                  #
+    #  Band power (BARU – dari pipeline)                                  #
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -59,7 +59,7 @@ class EEGFeatures:
 
         Returns
         -------
-        float  Absolute band power (ÂµVÂ²/Hz).
+        float  Absolute band power (µV²/Hz).
         """
         n = len(signal)
         if n < 4:
@@ -78,7 +78,7 @@ class EEGFeatures:
 
         Returns
         -------
-        float  Relative power (0â€“1).
+        float  Relative power (0–1).
         """
         n = len(signal)
         if n < 4:
@@ -436,7 +436,7 @@ class EEGFeatures:
                         feature_col="mav"):
         """Hitung ERD/ERS relatif terhadap baseline task.
 
-        ERD/ERS = ((Power_Task - Power_Baseline) / Power_Baseline) Ã— 100%
+        ERD/ERS = ((Power_Task - Power_Baseline) / Power_Baseline) × 100%
 
         Negatif = ERD (desynchronization), Positif = ERS (synchronization).
 
@@ -483,7 +483,7 @@ class EEGFeatures:
         result["baseline_value"] = merged[col_base]
         result["task_value"] = merged[col_task]
 
-        # ERD/ERS = ((task - baseline) / baseline) Ã— 100
+        # ERD/ERS = ((task - baseline) / baseline) × 100
         result["erd_ers_pct"] = np.where(
             merged[col_base] != 0,
             ((merged[col_task] - merged[col_base]) / merged[col_base]) * 100.0,

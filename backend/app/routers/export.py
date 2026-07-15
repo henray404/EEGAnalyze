@@ -1,4 +1,5 @@
 import io
+import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _THIN = Border(
@@ -87,17 +89,21 @@ async def export_excel(req: ExcelRequest):
     if not req.sheets:
         raise HTTPException(status_code=400, detail="Minimal satu sheet diperlukan")
 
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)
+    try:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
 
-    for spec in req.sheets:
-        safe_name = spec.name[:31].replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
-        ws = wb.create_sheet(safe_name or "Sheet")
-        _write_sheet(ws, spec.records)
+        for spec in req.sheets:
+            safe_name = spec.name[:31].replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
+            ws = wb.create_sheet(safe_name or "Sheet")
+            _write_sheet(ws, spec.records)
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+    except Exception as e:
+        logger.exception("export_excel gagal (sheets=%s)", [s.name for s in req.sheets])
+        raise HTTPException(status_code=500, detail=f"Gagal generate Excel: {e}")
 
     safe_file = req.filename.replace(" ", "_")
     if not safe_file.lower().endswith(".xlsx"):

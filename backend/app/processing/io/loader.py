@@ -1,9 +1,10 @@
-﻿"""
-Modul loader â€” Load data EEG dari file EDF atau arsip ZIP.
+"""
+Modul loader — Load data EEG dari file EDF atau arsip ZIP.
 Fungsi deteksi metadata (kategori, subject, time, scenario) juga ada di sini.
 """
 
 import io
+import logging
 import os
 import re
 import zipfile
@@ -15,7 +16,9 @@ import pandas as pd
 
 from app.config import OPENBCI_CHANNEL_MAP, OPENBCI_SFREQ, OPENBCI_CONDITIONS
 from app.config import RECOVERIX_SCALE, RECOVERIX_LABEL_MAP
-from app.processing import recoverix
+from app.processing.io import recoverix
+
+logger = logging.getLogger(__name__)
     
 
 class EEGLoader:
@@ -39,8 +42,8 @@ class EEGLoader:
         if self._tmp_path and os.path.exists(self._tmp_path):
             try:
                 os.unlink(self._tmp_path)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("Gagal hapus tempfile %s: %s", self._tmp_path, e)
             self._tmp_path = None
 
     def __del__(self):
@@ -91,8 +94,13 @@ class EEGLoader:
                     edf_files.append(name)
         return sorted(edf_files)
 
-    def load_edf_from_zip(self, zip_buffer, edf_path_in_zip):
-        """Ekstrak satu file EDF dari ZIP lalu load."""
+    def load_edf_from_zip(self, zip_buffer, edf_path_in_zip, preload=True):
+        """Ekstrak satu file EDF dari ZIP lalu load.
+
+        preload=False -- cuma baca header + annotations (sinyal tidak
+        dimuat ke memori). Dipakai /scan untuk cek task list tiap file
+        tanpa nge-load seluruh sample data (mahal untuk banyak file).
+        """
         self._cleanup_tmp()
         with zipfile.ZipFile(zip_buffer, "r") as zf:
             with zf.open(edf_path_in_zip) as edf_file:
@@ -101,10 +109,10 @@ class EEGLoader:
             tmp.write(data)
             self._tmp_path = tmp.name
         self.raw = mne.io.read_raw_edf(
-            self._tmp_path, preload=True, verbose=False
+            self._tmp_path, preload=preload, verbose=False
         )
 
-        self.raw_original = self.raw.copy()
+        self.raw_original = self.raw.copy() if preload else None
         self.sfreq = self.raw.info["sfreq"]
         self.channel_names = self.raw.ch_names
         self.processing_log = [f"File EDF dimuat dari ZIP: {edf_path_in_zip}"]
@@ -374,8 +382,8 @@ class EEGLoader:
         file_source : str | PathLike | file-like
             Path atau upload buffer ke file .txt OpenBCI.
         channel_map : dict | None
-            Mapping kolom CSV â†’ nama channel EEG.
-            Default: OPENBCI_CHANNEL_MAP (EXG Channel 2â€“7 â†’ T3â€“O2).
+            Mapping kolom CSV → nama channel EEG.
+            Default: OPENBCI_CHANNEL_MAP (EXG Channel 2–7 → T3–O2).
 
         Returns
         -------
@@ -446,7 +454,7 @@ class EEGLoader:
             ch_names = [channel_map[c] for c in available_cols]
             data = df_raw[available_cols].values.T  # (n_channels, n_times)
 
-            # Konversi ke ÂµV jika nilainya terlalu besar (OpenBCI default sudah ÂµV)
+            # Konversi ke µV jika nilainya terlalu besar (OpenBCI default sudah µV)
             # Buat MNE RawArray
             sfreq = OPENBCI_SFREQ
             info = mne.create_info(
@@ -454,7 +462,7 @@ class EEGLoader:
                 sfreq=sfreq,
                 ch_types="eeg",
             )
-            # Data OpenBCI sudah dalam ÂµV, MNE expects V â†’ konversi
+            # Data OpenBCI sudah dalam µV, MNE expects V → konversi
             data_volts = data * 1e-6
             self.raw = mne.io.RawArray(data_volts, info, verbose=False)
             self.raw_original = self.raw.copy()
@@ -479,7 +487,7 @@ class EEGLoader:
         txt_path_in_zip : str
             Path file .txt di dalam ZIP.
         channel_map : dict | None
-            Mapping kolom â†’ channel name.
+            Mapping kolom → channel name.
 
         Returns
         -------
@@ -603,9 +611,9 @@ class EEGLoader:
         """Deteksi subject ID dan kondisi dari path/nama file TXT OpenBCI.
 
         Mendukung format:
-          - Baseline/1baseline.txt â†’ subject=1, condition=baseline
-          - Familiar/alenbaseline.txt â†’ subject=alen, condition=familiar
-          - Unfamiliar/4nonfamiliar.txt â†’ subject=4, condition=unfamiliar
+          - Baseline/1baseline.txt → subject=1, condition=baseline
+          - Familiar/alenbaseline.txt → subject=alen, condition=familiar
+          - Unfamiliar/4nonfamiliar.txt → subject=4, condition=unfamiliar
 
         Returns
         -------
@@ -636,7 +644,7 @@ class EEGLoader:
                     condition = p_lower
                     break
 
-        # Normalize: nonfamiliar â†’ unfamiliar
+        # Normalize: nonfamiliar → unfamiliar
         if condition == "nonfamiliar":
             condition = "unfamiliar"
 

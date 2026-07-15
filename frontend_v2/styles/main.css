@@ -585,6 +585,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
   color: var(--text-primary);
   letter-spacing: -0.01em;
 }
+.card-header svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--text-muted); }
 .card-divider {
   height: 1px;
   background: var(--border);
@@ -1522,6 +1523,7 @@ table.dt tbody tr:last-child td { border-bottom: none; }
   flex-shrink: 0;
   transition: all 0.15s ease;
 }
+.radio-pill > svg { width: 20px; height: 20px; flex-shrink: 0; color: var(--text-muted); }
 .radio-pill.selected .r-dot { border-color: var(--accent); background: var(--accent); }
 .radio-pill.selected .r-dot::after {
   content: '';

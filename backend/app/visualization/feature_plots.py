@@ -1,5 +1,5 @@
-﻿"""
-Modul feature_plots â€” Visualisasi distribusi dan perbandingan fitur.
+"""
+Modul feature_plots — Visualisasi distribusi dan perbandingan fitur.
 """
 
 import numpy as np
@@ -9,22 +9,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 from app.config import CHANNEL_COLORS, TASK_COLORS, ACCENT_LIGHT
-
-_TEMPLATE = "plotly_dark"
-_PLOT_BG = "rgba(0,0,0,0)"
-_PAPER_BG = "rgba(0,0,0,0)"
-
-
-def _base_layout(**kwargs):
-    base = dict(
-        template=_TEMPLATE,
-        plot_bgcolor=_PLOT_BG,
-        paper_bgcolor=_PAPER_BG,
-        font=dict(family="Inter, sans-serif", color="#E2E8F0"),
-        margin=dict(l=50, r=20, t=44, b=40),
-    )
-    base.update(kwargs)
-    return base
+from app.visualization._theme import base_layout as _base_layout, PLOT_GRID_COLOR
 
 
 class FeaturePlots:
@@ -48,8 +33,8 @@ class FeaturePlots:
             },
         )
         fig.update_layout(**_base_layout(title=title, height=380))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -76,8 +61,8 @@ class FeaturePlots:
             },
         )
         fig.update_layout(**_base_layout(title=title, height=420))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -117,8 +102,8 @@ class FeaturePlots:
             points="outliers",
         )
         fig.update_layout(**_base_layout(title=title, height=440))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 
     @staticmethod
@@ -168,8 +153,8 @@ class FeaturePlots:
             title=title, height=450, barmode="group",
             legend=dict(title=group_col.capitalize()),
         ))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         if facets:
             fig.update_yaxes(title_text=feature_name, row=1, col=1)
         return fig
@@ -196,7 +181,7 @@ class FeaturePlots:
             },
         )
         fig.update_layout(**_base_layout(title=title, height=400))
-        fig.update_xaxes(gridcolor="#1E293B")
-        fig.update_yaxes(gridcolor="#1E293B")
+        fig.update_xaxes(gridcolor=PLOT_GRID_COLOR)
+        fig.update_yaxes(gridcolor=PLOT_GRID_COLOR)
         return fig
 

@@ -1,15 +1,18 @@
-﻿"""
-Modul filters â€” Bandpass, notch, ICA, dan bad channel detection.
+"""
+Modul filters — Bandpass, notch, ICA, dan bad channel detection.
 
 Bad channel detection diambil dari pipeline EEG-ALS- (02_split_to_csv.py).
 """
 
+import logging
+
 import numpy as np
 import mne
 from mne.preprocessing import ICA
-from scipy.signal import butter, filtfilt
 
 from app.config import BAD_CHANNEL_THRESHOLD, AMPLITUDE_MAX_UV
+
+logger = logging.getLogger(__name__)
 
 
 class EEGFilters:
@@ -39,7 +42,7 @@ class EEGFilters:
         loader.processing_log.append(f"Channel dipilih: {available}")
 
     # ------------------------------------------------------------------ #
-    #  Bad channel detection (BARU â€“ dari pipeline)                       #
+    #  Bad channel detection (BARU – dari pipeline)                       #
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -80,9 +83,9 @@ class EEGFilters:
 
     @staticmethod
     def apply_amplitude_filter(loader, max_uv=None):
-        """Clipping sinyal EEG ke Â±max_uv ÂµV.
+        """Clipping sinyal EEG ke ±max_uv µV.
 
-        Sinyal EEG normal biasanya < 100 ÂµV.  Nilai di atas threshold
+        Sinyal EEG normal biasanya < 100 µV.  Nilai di atas threshold
         di-clip untuk mengurangi artefak amplitudo tinggi.
 
         Parameters
@@ -90,7 +93,7 @@ class EEGFilters:
         loader : EEGLoader
             Loader instance dengan raw data.
         max_uv : float | None
-            Threshold amplitudo dalam ÂµV. Default dari config.
+            Threshold amplitudo dalam µV. Default dari config.
         """
         if loader.raw is None:
             raise RuntimeError("Data belum dimuat.")
@@ -98,14 +101,14 @@ class EEGFilters:
         if max_uv is None:
             max_uv = AMPLITUDE_MAX_UV
 
-        # MNE menyimpan data dalam Volt, konversi ÂµV â†’ V
+        # MNE menyimpan data dalam Volt, konversi µV → V
         max_v = max_uv * 1e-6
 
         data = loader.raw.get_data()
         clipped = np.clip(data, -max_v, max_v)
         loader.raw._data = clipped
 
-        loader.processing_log.append(f"Amplitude filter: Â±{max_uv} ÂµV")
+        loader.processing_log.append(f"Amplitude filter: ±{max_uv} µV")
 
     # ------------------------------------------------------------------ #
     #  Notch filter                                                       #
@@ -130,15 +133,6 @@ class EEGFilters:
             raise RuntimeError("Data belum dimuat.")
         loader.raw.filter(l_freq=low_freq, h_freq=high_freq, verbose=False)
         loader.processing_log.append(f"Bandpass: {low_freq}-{high_freq} Hz")
-
-    @staticmethod
-    def bandpass_array(data, sfreq, low, high, order=5):
-        """Bandpass filter pada array numpy 1-D."""
-        nyq = 0.5 * sfreq
-        low_n = max(low / nyq, 0.001)
-        high_n = min(high / nyq, 0.999)
-        b, a = butter(order, [low_n, high_n], btype="band")
-        return filtfilt(b, a, data)
 
     # ------------------------------------------------------------------ #
     #  ICA                                                                #
@@ -198,7 +192,8 @@ class EEGFilters:
                             loader.raw, ch_name=ch, verbose=False
                         )
                         eog_indices.extend(eog_idx)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("find_bads_eog gagal untuk channel %s: %s", ch, e)
                         continue
 
             # --- Muscle artifacts ---
@@ -213,7 +208,8 @@ class EEGFilters:
                             loader.raw, sphere=muscle_sphere, verbose=False,
                         )
                         muscle_indices.extend(muscle_idx)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("find_bads_muscle gagal untuk channel %s: %s", ch, e)
                         continue
 
             bad_ica = list(set(eog_indices + muscle_indices))
@@ -222,8 +218,8 @@ class EEGFilters:
                 eog_indices, _ = ica.find_bads_eog(loader.raw, verbose=False)
                 if eog_indices:
                     bad_ica = eog_indices
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("find_bads_eog (mode manual) gagal: %s", e)
 
         if bad_ica:
             ica.exclude = bad_ica

@@ -5,6 +5,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests._ndjson import ndjson_result, ndjson_error
 from tests.test_recoverix import make_descriptor, make_tar, make_bin
 
 client = TestClient(app)
@@ -45,7 +46,7 @@ def test_scan_recoverix_two_sessions():
         files={"file": ("sess.zip", _make_two_session_zip().getvalue(), "application/zip")},
     )
     assert resp.status_code == 200, resp.text
-    data = resp.json()
+    data = ndjson_result(resp)
     assert data["data_type"] == "recoverix"
     assert data["total_sessions"] == 2
     assert set(data["subjects"]) == {"111", "222"}
@@ -72,7 +73,9 @@ def test_scan_recoverix_rejects_zip_without_sessions():
         zf.writestr("data/foo.txt", "bukan recoveriX")
     zbuf.seek(0)
     resp = client.post(SCAN_URL, files={"file": ("empty.zip", zbuf.getvalue(), "application/zip")})
-    assert resp.status_code == 422
+    # Scan streaming: error mid-job -> status 200 + event error (bukan lagi 422).
+    assert resp.status_code == 200, resp.text
+    assert ndjson_error(resp) is not None
 
 
 def test_scan_recoverix_rejects_corrupt_zip():
@@ -80,7 +83,9 @@ def test_scan_recoverix_rejects_corrupt_zip():
         SCAN_URL,
         files={"file": ("corrupt.zip", b"this is not a valid zip file content", "application/zip")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 200, resp.text
+    detail = ndjson_error(resp)
+    assert detail is not None and "ZIP" in detail
 
 
 def test_process_recoverix_two_sessions():
@@ -176,7 +181,7 @@ def test_process_recoverix_intratrial_only_skips_paired():
 
 
 def test_scan_edf_still_reports_data_type_edf():
-    # ZIP tanpa EDF & tanpa sesi recoveriX -> 422 (bukan crash).
+    # ZIP tanpa EDF & tanpa sesi recoveriX -> event error (streaming), bukan crash.
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w") as zf:
         zf.writestr("notes/readme.txt", "kosong")
@@ -185,4 +190,5 @@ def test_scan_edf_still_reports_data_type_edf():
         SCAN_URL,
         files={"file": ("x.zip", zbuf.getvalue(), "application/zip")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 200, resp.text
+    assert ndjson_error(resp) is not None

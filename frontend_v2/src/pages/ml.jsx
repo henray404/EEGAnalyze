@@ -11,6 +11,8 @@ function MLPage() {
   const [dataset, setDataset] = useStateMLPage(null);
   const [target, setTarget] = useStateMLPage('');
   const [featureCols, setFeatureCols] = useStateMLPage([]);
+  const [groupCol, setGroupCol] = useStateMLPage('');
+  const [classWeightBalanced, setClassWeightBalanced] = useStateMLPage(false);
   const [missingStrategy, setMissingStrategy] = useStateMLPage('mean');
   const [normalize, setNormalize] = useStateMLPage('standard');
   const [splitPct, setSplitPct] = useStateMLPage(80);
@@ -25,6 +27,7 @@ function MLPage() {
   const goBack = () => setStage(s => Math.max(s - 1, 0));
   const handleReset = () => {
     setDataset(null); setTarget(''); setFeatureCols([]); setTrainResult(null);
+    setGroupCol(''); setClassWeightBalanced(false);
     setCompleted([]); setStage(0);
   };
 
@@ -49,7 +52,8 @@ function MLPage() {
         <StageUpload onNext={goNext}
           dataset={dataset} setDataset={setDataset}
           target={target} setTarget={setTarget}
-          featureCols={featureCols} setFeatureCols={setFeatureCols} />
+          featureCols={featureCols} setFeatureCols={setFeatureCols}
+          groupCol={groupCol} setGroupCol={setGroupCol} />
       )}
       {stage === 1 && (
         <StagePreproc onBack={goBack} onNext={goNext}
@@ -69,6 +73,7 @@ function MLPage() {
           dataset={dataset} target={target} featureCols={featureCols}
           missingStrategy={missingStrategy} normalize={normalize} splitPct={splitPct}
           selected={selectedModels} hyperOverrides={hyperOverrides}
+          groupCol={groupCol} classWeightBalanced={classWeightBalanced} setClassWeightBalanced={setClassWeightBalanced}
           trainResult={trainResult} setTrainResult={setTrainResult} />
       )}
       {stage === 4 && (

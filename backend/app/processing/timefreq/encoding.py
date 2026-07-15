@@ -1,11 +1,11 @@
-﻿"""
-Modul encoding â€” Batch encoding sinyal EEG ke matriks fitur.
+"""
+Modul encoding — Batch encoding sinyal EEG ke matriks fitur.
 
 Pipeline:
-  Load EDF â†’ Sliding Window (0.3s) â†’ Feature Extraction â†’ Flatten â†’ CSV
+  Load EDF → Sliding Window (0.3s) → Feature Extraction → Flatten → CSV
 
-Mendukung encoding batch seluruh EEGET-ALS Dataset (170 subjek Ã— 9 skenario).
-Output: matriks X [n_windows Ã— n_features] + vektor y [n_windows] siap ML.
+Mendukung encoding batch seluruh EEGET-ALS Dataset (170 subjek × 9 skenario).
+Output: matriks X [n_windows × n_features] + vektor y [n_windows] siap ML.
 """
 
 import os
@@ -25,10 +25,10 @@ from app.config import (
     BURST_ENABLE_DEFAULT,
     EEGET_ALS_SCENARIOS,
 )
-from app.processing.epoching import EpochEngine
-from app.processing.loader import EEGLoader
-from app.processing.superlets import SuperletTFR, build_frequency_grid
-from app.processing.gamma_bursts import GammaBurstDetector
+from app.processing.timefreq.epoching import EpochEngine
+from app.processing.io.loader import EEGLoader
+from app.processing.timefreq.superlets import SuperletTFR, build_frequency_grid
+from app.processing.timefreq.gamma_bursts import GammaBurstDetector
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def encode_single_edf(edf_path, window_size=None, overlap=None,
     window_size : float
         Durasi window dalam detik (default: 0.3).
     overlap : float
-        Rasio overlap 0.0â€“0.75 (default: 0.0).
+        Rasio overlap 0.0–0.75 (default: 0.0).
     subbands : dict | None
         Subband definitions.
     features : list[str] | None
@@ -284,7 +284,7 @@ def encode_single_edf(edf_path, window_size=None, overlap=None,
 
 
 # ------------------------------------------------------------------ #
-#  Flatten: long format â†’ wide format (1 row = 1 window)              #
+#  Flatten: long format → wide format (1 row = 1 window)              #
 # ------------------------------------------------------------------ #
 
 def flatten_features(encoded_df):
@@ -337,7 +337,7 @@ def flatten_features(encoded_df):
             index=group_cols, columns="ch_sb", values=feat,
             aggfunc="first",
         )
-        # Rename kolom: ch_sb â†’ ch_sb_feat
+        # Rename kolom: ch_sb → ch_sb_feat
         pivot.columns = [f"{col}_{feat}" for col in pivot.columns]
         pivoted_parts.append(pivot)
 

@@ -10,68 +10,36 @@ Endpoint:
   POST /plot/ica         — Plotly JSON komponen ICA
 """
 
+import io
 import json
 import logging
 import math
 import numpy as np
 import plotly.graph_objects as go
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
 from typing import Optional
 
-from app.processing.loader import EEGLoader
-from app.processing.filters import EEGFilters
-from app.processing.features import EEGFeatures
-from app.processing.chunking import ChunkingPipeline
+from app.processing.io.loader import EEGLoader
+from app.processing.filtering.filters import EEGFilters
+from app.processing.features.features import EEGFeatures
+from app.processing.features.chunking import ChunkingPipeline
 from app.config import DEFAULT_SUBBANDS
+from app.routers._shared import (
+    to_bool as _to_bool,
+    parse_csv_list as _parse_csv_list,
+    resolve_subbands as _resolve_subbands,
+    resolve_features as _resolve_features,
+    ndjson_job,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_SUBBAND_MAP = {
-    "delta": "Delta", "theta": "Theta", "mu": "Mu",
-    "alpha": "Alpha", "low_beta": "Low_Beta",
-    "beta": "Beta", "high_beta": "High_Beta", "gamma": "Gamma",
-}
-
 _ACCENT_COLORS = [
     "#5B65DC", "#7B83E5", "#4A53C0", "#8E96EE",
     "#3A45A8", "#A1A7F2", "#5B65DC", "#7B83E5",
 ]
-
-
-def _to_bool(s) -> bool:
-    return str(s).lower() == "true"
-
-
-def _resolve_subbands(ids_str: str) -> dict:
-    ids = [s.strip().lower() for s in ids_str.split(",") if s.strip()]
-    return {
-        _SUBBAND_MAP[i]: DEFAULT_SUBBANDS[_SUBBAND_MAP[i]]
-        for i in ids
-        if i in _SUBBAND_MAP and _SUBBAND_MAP[i] in DEFAULT_SUBBANDS
-    } or dict(DEFAULT_SUBBANDS)
-
-
-def _resolve_features(feats_str: str) -> list:
-    mapping = {
-        "mav": "mav", "variance": "variance", "std": "std",
-        "band_power": "band_power", "relative_power": "relative_power",
-        "peak_frequency": "peak_frequency",
-        "psd": "band_power", "erd": "band_power", "ers": "relative_power",
-    }
-    seen, result = set(), []
-    for f in feats_str.split(","):
-        key = f.strip().lower()
-        if key in mapping and mapping[key] not in seen:
-            seen.add(mapping[key])
-            result.append(mapping[key])
-    return result or ["mav", "variance", "std"]
-
-
-def _parse_csv_list(s: str) -> list:
-    return [x.strip() for x in (s or "").split(",") if x.strip()]
 
 
 def _is_txt(filename: str) -> bool:
@@ -95,14 +63,20 @@ def _is_zip(filename: str) -> bool:
     return filename.lower().endswith(".zip")
 
 
-def _load_uploaded_file(loader: EEGLoader, upload: UploadFile):
-    fname = upload.filename or ""
+def _load_uploaded_file(loader: EEGLoader, filename: str, fileobj):
+    """Load file EDF/TXT/ZIP dari file-like object (dispatch via ekstensi).
+
+    fileobj bisa UploadFile.file atau io.BytesIO(bytes) -- keduanya file-like,
+    dipakai supaya endpoint streaming bisa baca bytes dulu (await file.read())
+    lalu proses di threadpool.
+    """
+    fname = filename or ""
     if _is_edf(fname):
-        return loader.load_edf(upload.file)
+        return loader.load_edf(fileobj)
     if _is_txt(fname):
-        return loader.load_openbci_txt(upload.file)
+        return loader.load_openbci_txt(fileobj)
     if _is_zip(fname):
-        return loader.load_recoverix_zip(upload.file)
+        return loader.load_recoverix_zip(fileobj)
     raise HTTPException(
         status_code=400,
         detail="File harus berformat .edf, .txt (OpenBCI), atau .zip (recoveriX)",
@@ -286,30 +260,31 @@ def _slice_times(loader: EEGLoader, t_start: float, t_dur: float, channels: list
 # ============================================================== #
 
 @router.post("/upload")
-def upload_single_file(file: UploadFile = File(...)):
-    loader = EEGLoader()
-    try:
-        info = _load_uploaded_file(loader, file)
-    except HTTPException:
-        raise
-    except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Gagal load file: {e}")
+async def upload_single_file(file: UploadFile = File(...)):
+    data = await file.read()
+    fname = file.filename or ""
 
-    info["tasks"] = loader.get_task_list()
-    info["occurrences"] = [
-        {**o, "label": f'{o["task"]} #{o["occurrence"]}'}
-        for o in loader.get_task_occurrences()
-    ]
-    info["filename"] = file.filename
-    if _is_edf(file.filename or ""):
-        info["format"] = "EDF"
-    elif _is_zip(file.filename or ""):
-        info["format"] = "recoveriX"
-    else:
-        info["format"] = "TXT"
-    return JSONResponse(content=info)
+    def job(emit):
+        emit.log(f"Memuat {fname}...")
+        loader = EEGLoader()
+        info = _load_uploaded_file(loader, fname, io.BytesIO(data))
+        emit.log(f"Terbaca: {len(loader.channel_names)} channel @ {loader.sfreq:g} Hz")
+        info["tasks"] = loader.get_task_list()
+        info["occurrences"] = [
+            {**o, "label": f'{o["task"]} #{o["occurrence"]}'}
+            for o in loader.get_task_occurrences()
+        ]
+        info["filename"] = fname
+        if _is_edf(fname):
+            info["format"] = "EDF"
+        elif _is_zip(fname):
+            info["format"] = "recoveriX"
+        else:
+            info["format"] = "TXT"
+        emit.log(f"{len(info['tasks'])} task terdeteksi")
+        return info
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -317,7 +292,7 @@ def upload_single_file(file: UploadFile = File(...)):
 # ============================================================== #
 
 @router.post("/process")
-def process_single_file(
+async def process_single_file(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),
@@ -343,9 +318,15 @@ def process_single_file(
     selected: str = Form(""),
     selection_active: str = Form("false"),
 ):
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    data = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.progress(0, 5)
+        emit.step(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(data))
+        emit.step(f"Terbaca: {len(loader.channel_names)} channel @ {loader.sfreq:g} Hz")
 
         _apply_filters(
             loader,
@@ -354,6 +335,7 @@ def process_single_file(
             _to_bool(use_car), _to_bool(use_amplitude),
             _to_bool(use_ica), ica_method, ica_n,
         )
+        emit.step(f"Filter: bandpass {bp_low:g}-{bp_high:g} Hz")
 
         df = loader.extract_dataframe()
         all_tasks = loader.get_task_list()
@@ -400,6 +382,10 @@ def process_single_file(
         selected_subbands = _resolve_subbands(subbands)
         selected_features = _resolve_features(features)
 
+        n_seg = 1 if whole_file else len(sel_items or tasks)
+        emit.step(f"Ekstraksi fitur: {len(channels)} channel, {n_seg} segmen"
+                  + (" (chunk mode)" if _to_bool(chunk_mode) else ""))
+
         if whole_file:
             # Tidak ada task/annotation: proses seluruh sinyal sebagai 1 segmen.
             if _to_bool(chunk_mode):
@@ -422,7 +408,6 @@ def process_single_file(
             if not feat_df.empty:
                 feat_df.insert(0, "task", "(seluruh file)")
         elif sel_mode == "occurrence":
-            # Full-data per occurrence (chunk belum didukung untuk occurrence).
             selected_occ = set()
             occ_tasks = set()
             for item in sel_items:
@@ -439,17 +424,30 @@ def process_single_file(
                     status_code=400,
                     detail="Format occurrence tidak valid (harus 'task|nomor').",
                 )
-            feat_df = EEGFeatures.compute_occurrence_features(
-                loader, df, channels, list(occ_tasks),
-                subbands=selected_subbands,
-                features=selected_features,
-                include_frequency=_to_bool(include_frequency),
-                psd_method=psd_method,
-                psd_fmin=psd_fmin,
-                psd_fmax=psd_fmax,
-                selected_occ=selected_occ,
-            )
-            mode = "occurrence"
+            if _to_bool(chunk_mode):
+                # Chunk + chain encoding per occurrence spesifik (mis. cuma
+                # "Resting #1"), disegmentasi per occurrence itu sendiri
+                # lewat loader.extract_occurrence_segment.
+                feat_df = ChunkingPipeline.compute_occurrence_chunked_features(
+                    loader, df, channels, list(selected_occ),
+                    chunk_duration=chunk_duration,
+                    subbands=selected_subbands,
+                    features=selected_features,
+                    parallel=True,
+                )
+                mode = "chunk"
+            else:
+                feat_df = EEGFeatures.compute_occurrence_features(
+                    loader, df, channels, list(occ_tasks),
+                    subbands=selected_subbands,
+                    features=selected_features,
+                    include_frequency=_to_bool(include_frequency),
+                    psd_method=psd_method,
+                    psd_fmin=psd_fmin,
+                    psd_fmax=psd_fmax,
+                    selected_occ=selected_occ,
+                )
+                mode = "occurrence"
         elif _to_bool(chunk_mode):
             feat_df = ChunkingPipeline.compute_task_chunked_features(
                 loader, df, channels, tasks,
@@ -471,21 +469,30 @@ def process_single_file(
             )
             mode = "full"
 
+        encoding_records = []
+        if mode == "chunk" and not feat_df.empty:
+            feat_df = ChunkingPipeline.attach_chunk_encoding(feat_df)
+            chain_df = ChunkingPipeline.compute_chain_encoding(feat_df)
+            if not chain_df.empty:
+                summary_df = ChunkingPipeline.summarize_chain_encoding(chain_df)
+                encoding_records = _sanitize_records(
+                    summary_df.to_dict(orient="records")
+                )
+
         records = _sanitize_records(feat_df.to_dict(orient="records")) if not feat_df.empty else []
-        return JSONResponse(content={
+        emit.step(f"Selesai: {len(records)} record")
+        return {
             "mode": mode,
             "tasks": tasks,
             "channels": channels,
             "sfreq": loader.sfreq,
             "n_records": len(records),
             "features": records,
+            "encoding_records": encoding_records,
             "processing_log": loader.get_processing_log(),
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("process_single_file failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        }
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -493,7 +500,7 @@ def process_single_file(
 # ============================================================== #
 
 @router.post("/erd")
-def compute_erd_single(
+async def compute_erd_single(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),
@@ -519,9 +526,14 @@ def compute_erd_single(
     if not is_intra_trial and not baseline_task:
         raise HTTPException(status_code=400, detail="baseline_task dan target_task wajib diisi")
 
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    data = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.progress(0, 4)
+        emit.step(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(data))
         _apply_filters(
             loader,
             bp_low, bp_high, bp_order,
@@ -529,6 +541,7 @@ def compute_erd_single(
             _to_bool(use_car), _to_bool(use_amplitude),
             _to_bool(use_ica), ica_method, ica_n,
         )
+        emit.step(f"Filter: bandpass {bp_low:g}-{bp_high:g} Hz")
 
         df = loader.extract_dataframe()
         all_channels = loader.channel_names
@@ -536,6 +549,7 @@ def compute_erd_single(
         channels = [c for c in all_channels if not ch_filter or c in ch_filter] or all_channels
 
         selected_subbands = _resolve_subbands(subbands)
+        emit.step(f"Menghitung ERD/ERS: target '{target_task}'")
 
         if is_intra_trial:
             # cue_offset_s bisa 0.0 valid (trigger di sampel 0); cek None.
@@ -567,18 +581,16 @@ def compute_erd_single(
             erd_mode = "full"
 
         records = _sanitize_records(erd_df.to_dict(orient="records")) if not erd_df.empty else []
-        return JSONResponse(content={
+        emit.step(f"Selesai: {len(records)} record")
+        return {
             "baseline_task": baseline_task if not is_intra_trial else "pre-cue",
             "target_task": target_task,
             "erd_mode": erd_mode,
             "chunk_duration": chunk_duration if erd_mode == "chunk" else None,
             "erd_records": records,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("compute_erd_single failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        }
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -586,7 +598,7 @@ def compute_erd_single(
 # ============================================================== #
 
 @router.post("/plot/raw")
-def plot_raw(
+async def plot_raw(
     file: UploadFile = File(...),
     channels: str = Form(""),
     t_start: float = Form(0.0),
@@ -594,20 +606,22 @@ def plot_raw(
     annotation_filter: str = Form(""),
     annotation_filter_active: str = Form("false"),
 ):
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    raw_bytes = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.log(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(raw_bytes))
         ch_list = _parse_csv_list(channels) or loader.channel_names[:8]
+        emit.log(f"Plot {len(ch_list)} channel, t={t_start:g}-{t_start + t_dur:g}s")
         times, data, used = _slice_times(loader, t_start, t_dur, ch_list)
         allowed = set(_parse_csv_list(annotation_filter))
         anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         fig = _signal_to_plotly_fig(times, data, used, title="Raw EEG Signal", annotations=anns)
-        return JSONResponse(content={"figure": fig, "channels": used, "annotations": anns})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plot_raw failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        return {"figure": fig, "channels": used, "annotations": anns}
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -615,7 +629,7 @@ def plot_raw(
 # ============================================================== #
 
 @router.post("/plot/filtered")
-def plot_filtered(
+async def plot_filtered(
     file: UploadFile = File(...),
     channels: str = Form(""),
     t_start: float = Form(0.0),
@@ -630,9 +644,14 @@ def plot_filtered(
     annotation_filter: str = Form(""),
     annotation_filter_active: str = Form("false"),
 ):
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    raw_bytes = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.log(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(raw_bytes))
+        emit.log("Menerapkan filter...")
         if _to_bool(use_car):
             EEGFilters.apply_car(loader)
         if _to_bool(use_amplitude):
@@ -642,6 +661,7 @@ def plot_filtered(
         EEGFilters.apply_bandpass(
             loader, low_freq=bp_low, high_freq=bp_high, order=bp_order,
         )
+        emit.log(f"Bandpass {bp_low:g}-{bp_high:g} Hz OK")
         ch_list = _parse_csv_list(channels) or loader.channel_names[:8]
         times, data, used = _slice_times(loader, t_start, t_dur, ch_list)
         title = f"Filtered Signal . Bandpass {bp_low}-{bp_high} Hz"
@@ -650,12 +670,9 @@ def plot_filtered(
         allowed = set(_parse_csv_list(annotation_filter))
         anns = _annotations_in_window(loader, t_start, t_start + t_dur, allowed, _to_bool(annotation_filter_active))
         fig = _signal_to_plotly_fig(times, data, used, title=title, annotations=anns)
-        return JSONResponse(content={"figure": fig, "channels": used, "annotations": anns})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plot_filtered failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        return {"figure": fig, "channels": used, "annotations": anns}
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -663,7 +680,7 @@ def plot_filtered(
 # ============================================================== #
 
 @router.post("/plot/subband")
-def plot_subband(
+async def plot_subband(
     file: UploadFile = File(...),
     channel: str = Form(...),
     t_start: float = Form(0.0),
@@ -675,9 +692,13 @@ def plot_subband(
     from plotly.subplots import make_subplots
     from scipy.signal import butter, filtfilt
 
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    raw_bytes = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.log(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(raw_bytes))
         if channel not in loader.raw.ch_names:
             raise HTTPException(
                 status_code=400,
@@ -687,6 +708,7 @@ def plot_subband(
         selected_subbands = _resolve_subbands(subbands)
         if not selected_subbands:
             raise HTTPException(status_code=400, detail="Tidak ada subband valid")
+        emit.log(f"Dekomposisi {len(selected_subbands)} subband, channel {channel}")
 
         sfreq = loader.sfreq
         n_total = loader.raw.n_times
@@ -786,17 +808,14 @@ def plot_subband(
             )
         fig.update_xaxes(title_text="time (s)", row=rows, col=1)
 
-        return JSONResponse(content={
+        return {
             "figure": json.loads(fig.to_json()),
             "channel": channel,
             "subbands": names,
             "annotations": anns,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plot_subband failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        }
+
+    return ndjson_job(job)
 
 
 # ============================================================== #
@@ -804,7 +823,7 @@ def plot_subband(
 # ============================================================== #
 
 @router.post("/plot/ica")
-def plot_ica(
+async def plot_ica(
     file: UploadFile = File(...),
     bp_low: float = Form(0.5),
     bp_high: float = Form(49.0),
@@ -816,15 +835,21 @@ def plot_ica(
     annotation_filter: str = Form(""),
     annotation_filter_active: str = Form("false"),
 ):
-    loader = EEGLoader()
-    try:
-        _load_uploaded_file(loader, file)
+    raw_bytes = await file.read()
+    fname = file.filename or ""
+
+    def job(emit):
+        emit.log(f"Memuat {fname}...")
+        loader = EEGLoader()
+        _load_uploaded_file(loader, fname, io.BytesIO(raw_bytes))
+        emit.log(f"Bandpass {bp_low:g}-{bp_high:g} Hz, hitung ICA ({ica_method})...")
         EEGFilters.apply_bandpass(
             loader, low_freq=bp_low, high_freq=bp_high, order=bp_order,
         )
         try:
             EEGFilters.apply_ica(loader, n_components=ica_n, method=ica_method)
         except Exception as e:
+            logger.warning("plot_ica: ICA gagal untuk %s: %s", fname, e)
             raise HTTPException(status_code=422, detail=f"ICA gagal: {e}")
 
         sfreq = loader.sfreq
@@ -867,13 +892,11 @@ def plot_ica(
             shapes=shapes,
             annotations=text_anns,
         )
-        return JSONResponse(content={
+        emit.log(f"{n_ch} komponen ICA")
+        return {
             "figure": json.loads(fig.to_json()),
             "n_components": n_ch,
             "annotations": anns,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plot_ica failed")
-        raise HTTPException(status_code=422, detail=str(e))
+        }
+
+    return ndjson_job(job)
