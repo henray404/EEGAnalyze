@@ -1,7 +1,16 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# VERSION lives at repo root (backend/app/main.py -> app -> backend -> repo root),
+# same file launcher.py reads - single source of truth for both.
+_VERSION_FILE = Path(__file__).resolve().parents[2] / "VERSION"
+try:
+    APP_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip()
+except OSError:
+    APP_VERSION = "0.0"
 
 # Root logger belum dikonfigurasi di mana pun -- tanpa ini, logger.warning()
 # di seluruh modul (processing/, routers/) cuma nongol lewat handler default
@@ -14,7 +23,7 @@ logging.basicConfig(
 
 from app.routers import single_file, batch, export, ml
 
-app = FastAPI(title="EEG Analysis API", version="2.2.0")
+app = FastAPI(title="EEG Analysis API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,4 +41,4 @@ app.include_router(ml.router, prefix="/api/ml", tags=["machine-learning"])
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}

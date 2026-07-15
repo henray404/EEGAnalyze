@@ -21,3 +21,21 @@ def test_venv_python_nested_under_backend_venv():
 
 def test_requirements_path_under_backend():
     assert launcher.REQUIREMENTS == os.path.join(launcher.BACKEND_DIR, "requirements.txt")
+
+
+def _make_lines_collector():
+    lines = []
+    return lines, lines.append
+
+
+def test_check_for_updates_skips_when_not_a_git_clone(tmp_path):
+    lines, on_line = _make_lines_collector()
+    launcher.check_for_updates(str(tmp_path), on_line)
+    assert any("Bukan git clone" in ln for ln in lines)
+
+
+def test_check_for_updates_skips_when_git_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
+    lines, on_line = _make_lines_collector()
+    launcher.check_for_updates(str(tmp_path), on_line)
+    assert any("git tidak ditemukan" in ln for ln in lines)

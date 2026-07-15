@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.3 - 2026-07-15
+
+- Nomor versi sekarang punya satu sumber kebenaran: file VERSION di root repo. launcher.py dan backend (FastAPI title version + /health) baca dari situ, bukan konstanta terpisah yang gampang lupa disinkronkan
+
 ## v2.2 - 2026-07-15
 
 - ML pipeline: split train/test group-aware (StratifiedGroupKFold, cegah data leakage antar subject), metrik tambahan (MCC, specificity, PR-AUC, CV mean+-std), fix crash confusion_matrix saat ada kelas hilang di test set

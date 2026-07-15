@@ -10,6 +10,7 @@ import time
 import os
 import sys
 import re
+import shutil
 import webbrowser
 import logging
 
@@ -24,8 +25,13 @@ logging.info("=" * 50)
 logging.info("Launcher started")
 
 # --- KONFIGURASI ---
-LOCAL_VERSION = "2.2"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+VERSION_FILE = os.path.join(APP_DIR, "VERSION")
+try:
+    with open(VERSION_FILE, "r", encoding="utf-8") as _f:
+        LOCAL_VERSION = _f.read().strip()
+except OSError:
+    LOCAL_VERSION = "0.0"
 BACKEND_DIR = os.path.join(APP_DIR, "backend")
 FRONTEND_DIR = os.path.join(APP_DIR, "frontend_v2")
 # backend/.venv, bukan .venv di root -- ini yang dipakai start.bat/start.sh
@@ -64,6 +70,54 @@ def _read_current_changelog():
     except Exception:
         pass
     return []
+
+
+def check_for_updates(app_dir, on_line):
+    """Fetch + fast-forward pull kalau ada commit baru di remote. Aman
+    dipanggil tiap start (skip diam-diam kalau bukan git clone, git gak
+    ada, atau ada perubahan lokal yang bikin ff-only gagal) - launcher ini
+    dipakai user non-teknis lewat shortcut, jadi update harus otomatis
+    tanpa dialog, bukan sesuatu yang mereka putuskan manual.
+    """
+    on_line("Memeriksa update...")
+    git = shutil.which("git")
+    if git is None:
+        on_line("  git tidak ditemukan, lewati pengecekan update.")
+        return
+    if not os.path.isdir(os.path.join(app_dir, ".git")):
+        on_line("  Bukan git clone, lewati pengecekan update.")
+        return
+    try:
+        subprocess.run(
+            [git, "fetch", "--quiet"], cwd=app_dir,
+            capture_output=True, timeout=15, check=True,
+        )
+        local = subprocess.run(
+            [git, "rev-parse", "HEAD"], cwd=app_dir,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        remote = subprocess.run(
+            [git, "rev-parse", "@{u}"], cwd=app_dir,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception as e:
+        on_line(f"  Pengecekan update gagal (dilewati): {e}")
+        return
+    if local == remote:
+        on_line("  Sudah versi terbaru.")
+        return
+    on_line("  Update tersedia, menarik perubahan...")
+    # --ff-only: kalau ada perubahan lokal yang bentrok, gagal dengan aman
+    # (skip) daripada bikin merge commit/conflict di install user.
+    result = subprocess.run(
+        [git, "pull", "--ff-only", "--quiet"], cwd=app_dir,
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode == 0:
+        on_line("  Update berhasil ditarik. Tutup dan buka lagi aplikasi untuk pakai versi terbaru.")
+    else:
+        detail = (result.stderr or result.stdout or "").strip()[:200]
+        on_line(f"  Update gagal ditarik (dilewati): {detail}")
 
 
 def _wait_for_backend(timeout=30):
@@ -194,6 +248,10 @@ class LauncherApp:
     # ---- Setup ----
     def _run_setup(self):
         self.start_btn.configure(state="disabled", bg="#374151")
+
+        # Step 0: Update check
+        self.set_progress(2)
+        check_for_updates(APP_DIR, self.log)
 
         # Step 1: Venv
         self.log("Memeriksa virtual environment...")
