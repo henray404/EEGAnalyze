@@ -18,109 +18,238 @@ function PlotlyFig({ figure, minHeight = 360 }) {
 }
 
 // ===================== STAGE 3: MODEL SELECTION =====================
+/*
+ * Tiap model punya `params`: skema deklaratif yang dirender HyperEditor.
+ * Sebelumnya editor itu if-chain per model, jadi tiap nambah hyperparameter
+ * harus nulis JSX baru, dan Naive Bayes dianggap "tanpa hyperparameter"
+ * padahal var_smoothing ada. Tipe: number | int | choice | bool | text.
+ */
 const MODELS = [
+  {
+    id: 'hgb',
+    name: 'Hist Gradient Boosting',
+    badge: { label: 'BOOSTING', cls: 'badge-accent' },
+    desc: 'Gradient boosting berbasis histogram. Umumnya paling kuat untuk fitur tabular hasil ekstraksi seperti dataset ini, dan tahan terhadap fitur berskala beda.',
+    params: [
+      { key: 'learning_rate', label: 'learning_rate', type: 'number', def: 0.1, min: 0.001, max: 1, step: 0.01,
+        help: 'Kecil = belajar pelan tapi lebih stabil. Pasangkan dengan max_iter besar.' },
+      { key: 'max_iter', label: 'max_iter', type: 'int', def: 200, min: 20, max: 2000, step: 20,
+        help: 'Jumlah tahap boosting (pohon).' },
+      { key: 'max_depth', label: 'max_depth', type: 'int', def: 6, min: 1, max: 50, step: 1,
+        help: 'Kedalaman tiap pohon. Kecil = lebih sederhana.' },
+      { key: 'min_samples_leaf', label: 'min_samples_leaf', type: 'int', def: 20, min: 1, max: 200, step: 1,
+        help: 'Minimum sampel per daun. Naikkan kalau overfit.' },
+      { key: 'l2_regularization', label: 'l2_regularization', type: 'number', def: 0, min: 0, max: 10, step: 0.1,
+        help: 'Penalti L2 pada bobot daun.' },
+    ],
+  },
   {
     id: 'svm',
     name: 'SVM',
     badge: { label: 'KERNEL', cls: 'badge-accent' },
     desc: 'Support Vector Machine dengan kernel non-linear, baik untuk data dengan margin yang jelas.',
-    defaults: { kernel: 'rbf', C: 1.0 },
+    params: [
+      { key: 'kernel', label: 'Kernel', type: 'choice', options: ['rbf', 'linear', 'poly'], def: 'rbf',
+        help: 'Bentuk batas keputusan. linear = paling cepat, rbf = paling fleksibel.' },
+      { key: 'C', label: 'C (regularisasi)', type: 'number', def: 1.0, min: 0.01, max: 1000, step: 0.1,
+        help: 'Makin besar = makin ketat mengikuti data latih (risiko overfit).' },
+      { key: 'gamma', label: 'Gamma', type: 'choice', options: ['scale', 'auto'], def: 'scale',
+        help: 'Jangkauan pengaruh satu sampel. Hanya dipakai kernel rbf/poly.' },
+    ],
   },
   {
     id: 'rf',
     name: 'Random Forest',
     badge: { label: 'ENSEMBLE', cls: 'badge-normal' },
     desc: 'Ensemble decision tree dengan voting mayoritas, robust terhadap overfitting dan outlier.',
-    defaults: { n_estimators: 100, max_depth: 10 },
+    params: [
+      { key: 'n_estimators', label: 'n_estimators', type: 'int', def: 100, min: 10, max: 1000, step: 10,
+        help: 'Jumlah pohon. Lebih banyak = lebih stabil tapi lebih lambat.' },
+      { key: 'max_depth', label: 'max_depth', type: 'int', def: 10, min: 1, max: 100, step: 1,
+        help: 'Kedalaman maksimum tiap pohon. Kecil = model lebih sederhana.' },
+      { key: 'min_samples_leaf', label: 'min_samples_leaf', type: 'int', def: 1, min: 1, max: 50, step: 1,
+        help: 'Minimum sampel per daun. Naikkan kalau overfit.' },
+      { key: 'max_features', label: 'max_features', type: 'choice', options: ['sqrt', 'log2'], def: 'sqrt',
+        help: 'Berapa fitur dipertimbangkan tiap split.' },
+    ],
+  },
+  {
+    id: 'et',
+    name: 'Extra Trees',
+    badge: { label: 'ENSEMBLE', cls: 'badge-normal' },
+    desc: 'Seperti Random Forest tapi titik split dipilih acak. Sering lebih tahan fitur berisik dan lebih cepat dilatih.',
+    params: [
+      { key: 'n_estimators', label: 'n_estimators', type: 'int', def: 200, min: 10, max: 1000, step: 10,
+        help: 'Jumlah pohon. Lebih banyak = lebih stabil tapi lebih lambat.' },
+      { key: 'max_depth', label: 'max_depth', type: 'int', def: 12, min: 1, max: 100, step: 1,
+        help: 'Kedalaman maksimum tiap pohon.' },
+      { key: 'min_samples_leaf', label: 'min_samples_leaf', type: 'int', def: 1, min: 1, max: 50, step: 1,
+        help: 'Minimum sampel per daun. Naikkan kalau overfit.' },
+      { key: 'max_features', label: 'max_features', type: 'choice', options: ['sqrt', 'log2'], def: 'sqrt',
+        help: 'Berapa fitur dipertimbangkan tiap split.' },
+    ],
+  },
+  {
+    id: 'dt',
+    name: 'Decision Tree',
+    badge: { label: 'INTERPRETABLE', cls: 'badge-info', style: { background: '#EEE5F5', color: '#6F3D9E' } },
+    desc: 'Satu pohon keputusan. Akurasinya biasanya di bawah ensemble, tapi aturannya bisa dibaca langsung — berguna untuk penjelasan di laporan.',
+    params: [
+      { key: 'criterion', label: 'Criterion', type: 'choice', options: ['gini', 'entropy'], def: 'gini',
+        help: 'Ukuran kualitas split.' },
+      { key: 'max_depth', label: 'max_depth', type: 'int', def: 6, min: 1, max: 50, step: 1,
+        help: 'Kecil = pohon lebih dangkal dan lebih mudah dibaca.' },
+      { key: 'min_samples_leaf', label: 'min_samples_leaf', type: 'int', def: 5, min: 1, max: 200, step: 1,
+        help: 'Minimum sampel per daun. Menahan pohon tumbuh terlalu spesifik.' },
+    ],
   },
   {
     id: 'knn',
     name: 'K-Nearest Neighbors',
     badge: { label: 'DISTANCE', cls: 'badge-info', style: { background: '#EEE5F5', color: '#6F3D9E' } },
     desc: 'Klasifikasi berdasarkan k tetangga terdekat, sederhana namun sensitif terhadap skala fitur.',
-    defaults: { n_neighbors: 5, metric: 'euclidean' },
+    params: [
+      { key: 'n_neighbors', label: 'n_neighbors', type: 'int', def: 5, min: 1, max: 100, step: 1,
+        help: 'Jumlah tetangga yang ikut voting. Ganjil menghindari seri di kasus biner.' },
+      { key: 'metric', label: 'Metric', type: 'choice', options: ['euclidean', 'manhattan'], def: 'euclidean',
+        help: 'Cara mengukur jarak antar sampel.' },
+      { key: 'weights', label: 'Weights', type: 'choice', options: ['uniform', 'distance'], def: 'uniform',
+        help: 'distance = tetangga lebih dekat punya suara lebih besar.' },
+    ],
   },
   {
     id: 'lr',
     name: 'Logistic Regression',
     badge: { label: 'LINEAR', cls: 'badge-info', style: { background: '#FCEEDC', color: '#B07B1F' } },
     desc: 'Model linear probabilistik, interpretable dan cepat untuk masalah klasifikasi biner.',
-    defaults: { C: 1.0, solver: 'lbfgs' },
+    params: [
+      { key: 'C', label: 'C (inverse reg)', type: 'number', def: 1.0, min: 0.01, max: 1000, step: 0.1,
+        help: 'Kebalikan kekuatan regularisasi. Kecil = regularisasi kuat.' },
+      { key: 'solver', label: 'Solver', type: 'choice', options: ['lbfgs', 'liblinear'], def: 'lbfgs',
+        help: 'Algoritma optimasi. liblinear cocok untuk dataset kecil.' },
+      { key: 'max_iter', label: 'max_iter', type: 'int', def: 1000, min: 100, max: 5000, step: 100,
+        help: 'Batas iterasi. Naikkan kalau muncul peringatan konvergensi.' },
+    ],
   },
   {
     id: 'nb',
     name: 'Naive Bayes',
     badge: { label: 'PROBABILISTIC', cls: 'badge-info' },
     desc: 'Klasifikator probabilistik berbasis teorema Bayes dengan asumsi independensi fitur.',
-    defaults: {},
+    params: [
+      { key: 'var_smoothing', label: 'var_smoothing', type: 'choice',
+        options: [1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-5], def: 1e-9,
+        format: v => Number(v).toExponential(0),
+        help: 'Tambahan varians untuk stabilitas numerik. Naikkan kalau fitur nyaris konstan.' },
+    ],
   },
 ];
 
-function HyperEditor({ model, value, onChange }) {
-  const v = { ...model.defaults, ...value };
-  const setField = (k, x) => onChange({ ...v, [k]: x });
+/** Nilai default satu model, diturunkan dari skema params. */
+function modelDefaults(m) {
+  return Object.fromEntries((m?.params || []).map(p => [p.key, p.def]));
+}
 
-  if (model.id === 'svm') return (
-    <>
-      <div className="form-row">
-        <label>Kernel</label>
-        <div className="chip-group">
-          {['rbf', 'linear', 'poly'].map(k => (
-            <button key={k} className={`chip ${v.kernel === k ? 'selected' : ''}`} onClick={(e) => { e.stopPropagation(); setField('kernel', k); }}>{k}</button>
-          ))}
-        </div>
+/** Param yang nilainya beda dari default — dipakai badge & tombol reset. */
+function changedParams(m, value) {
+  const v = value || {};
+  return (m?.params || []).filter(p => p.key in v && v[p.key] !== p.def);
+}
+
+/** Jepit nilai numerik ke [min, max] skema; input kosong balik ke default. */
+function _clampParam(p, raw) {
+  if (raw === '' || raw === null || raw === undefined) return p.def;
+  const n = p.type === 'int' ? parseInt(raw, 10) : parseFloat(raw);
+  if (!Number.isFinite(n)) return p.def;
+  if (p.min !== undefined && n < p.min) return p.min;
+  if (p.max !== undefined && n > p.max) return p.max;
+  return n;
+}
+
+function HyperField({ param: p, value, onChange }) {
+  const isDefault = value === p.def;
+  const stop = e => e.stopPropagation();
+
+  let control;
+  if (p.type === 'choice') {
+    control = (
+      <div className="chip-group">
+        {p.options.map(opt => (
+          <button key={String(opt)} type="button"
+            className={`chip ${value === opt ? 'selected' : ''}`}
+            onClick={e => { stop(e); onChange(opt); }}>
+            {p.format ? p.format(opt) : String(opt)}
+          </button>
+        ))}
       </div>
-      <div className="form-row" onClick={e => e.stopPropagation()}>
-        <label><span>C (regularization)</span></label>
-        <input className="input" type="number" step="0.1" min="0.01" value={v.C} onChange={e => setField('C', parseFloat(e.target.value) || 1.0)} />
+    );
+  } else if (p.type === 'bool') {
+    control = (
+      <button type="button" className={`hp-switch ${value ? 'on' : ''}`}
+        onClick={e => { stop(e); onChange(!value); }}
+        aria-pressed={!!value}>
+        <span className="hp-switch-knob" />
+        <span className="hp-switch-text">{value ? 'aktif' : 'nonaktif'}</span>
+      </button>
+    );
+  } else if (p.type === 'text') {
+    control = (
+      <input className="input" type="text" value={value ?? ''} placeholder={p.placeholder}
+        onClick={stop}
+        onChange={e => onChange(e.target.value)}
+        onBlur={e => onChange(e.target.value.trim() || p.def)} />
+    );
+  } else {
+    control = (
+      <input className="input" type="number"
+        step={p.step} min={p.min} max={p.max}
+        title={`rentang ${p.min} – ${p.max}`}
+        value={value ?? ''}
+        onClick={stop}
+        onChange={e => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+        onBlur={e => onChange(_clampParam(p, e.target.value))} />
+    );
+  }
+
+  const defText = p.format ? p.format(p.def) : String(p.def);
+  // Rentang + default digabung satu baris; sebelumnya help dan rentang jadi dua
+  // paragraf terpisah sehingga tiap field makan 4 baris dan panelnya kepanjangan.
+  const meta = p.min !== undefined
+    ? `${p.min} – ${p.max} · default ${defText}`
+    : `default ${defText}`;
+
+  return (
+    <div className={`hp-field ${isDefault ? '' : 'dirty'}`} onClick={stop}>
+      <div className="hp-field-head">
+        <label className="hp-key">{p.label}</label>
+        {!isDefault && (
+          <button type="button" className="hp-reset" title={`Kembalikan ke ${defText}`}
+            onClick={e => { stop(e); onChange(p.def); }}>
+            <Icon.Refresh /> reset
+          </button>
+        )}
       </div>
-    </>
+      {control}
+      <p className="hp-meta">{meta}</p>
+      {p.help && <p className="hp-help">{p.help}</p>}
+    </div>
   );
-  if (model.id === 'rf') return (
-    <>
-      <div className="form-row" onClick={e => e.stopPropagation()}>
-        <label><span>n_estimators</span></label>
-        <input className="input" type="number" step="10" min="1" value={v.n_estimators} onChange={e => setField('n_estimators', parseInt(e.target.value) || 100)} />
-      </div>
-      <div className="form-row" onClick={e => e.stopPropagation()}>
-        <label><span>max_depth</span></label>
-        <input className="input" type="number" step="1" min="1" value={v.max_depth} onChange={e => setField('max_depth', parseInt(e.target.value) || 10)} />
-      </div>
-    </>
+}
+
+function HyperEditor({ model, value, onChange }) {
+  const v = { ...modelDefaults(model), ...value };
+  const params = model.params || [];
+  if (params.length === 0) {
+    return <div className="hp-empty">Model ini tidak punya hyperparameter yang bisa diatur.</div>;
+  }
+  return (
+    <div className="hp-grid">
+      {params.map(p => (
+        <HyperField key={p.key} param={p} value={v[p.key]}
+          onChange={x => onChange({ ...v, [p.key]: x })} />
+      ))}
+    </div>
   );
-  if (model.id === 'knn') return (
-    <>
-      <div className="form-row" onClick={e => e.stopPropagation()}>
-        <label><span>n_neighbors</span></label>
-        <input className="input" type="number" step="1" min="1" value={v.n_neighbors} onChange={e => setField('n_neighbors', parseInt(e.target.value) || 5)} />
-      </div>
-      <div className="form-row">
-        <label>Metric</label>
-        <div className="chip-group">
-          {['euclidean', 'manhattan'].map(m => (
-            <button key={m} className={`chip ${v.metric === m ? 'selected' : ''}`} onClick={(e) => { e.stopPropagation(); setField('metric', m); }}>{m}</button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-  if (model.id === 'lr') return (
-    <>
-      <div className="form-row" onClick={e => e.stopPropagation()}>
-        <label><span>C (inverse reg)</span></label>
-        <input className="input" type="number" step="0.1" min="0.01" value={v.C} onChange={e => setField('C', parseFloat(e.target.value) || 1.0)} />
-      </div>
-      <div className="form-row">
-        <label>Solver</label>
-        <div className="chip-group">
-          {['lbfgs', 'liblinear'].map(s => (
-            <button key={s} className={`chip ${v.solver === s ? 'selected' : ''}`} onClick={(e) => { e.stopPropagation(); setField('solver', s); }}>{s}</button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-  return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Tidak ada hyperparameter</div>;
 }
 
 function StageModels({ onBack, onNext, selected, setSelected, hyperOverrides, setHyperOverrides }) {
@@ -137,11 +266,15 @@ function StageModels({ onBack, onNext, selected, setSelected, hyperOverrides, se
         <span className="chip-mini accent">{selected.length} model dipilih</span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      {/* align-items start, bukan stretch: tanpa ini kartu tetangga di baris
+          grid yang sama ikut melar setinggi kartu yang panel hyperparameter-nya
+          dibuka, jadi kelihatan seperti ikut ter-expand padahal cuma kotaknya. */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
         {MODELS.map(m => {
           const isSel = selected.includes(m.id);
           const isExp = expanded[m.id];
-          const hyper = hyperOverrides[m.id] || m.defaults;
+          const hyper = hyperOverrides[m.id] || modelDefaults(m);
+          const changed = changedParams(m, hyperOverrides[m.id]);
           return (
             <div key={m.id}
               className="card card-pad"
@@ -172,12 +305,22 @@ function StageModels({ onBack, onNext, selected, setSelected, hyperOverrides, se
                 style={{ paddingTop: 4 }}
                 onClick={(e) => { e.stopPropagation(); setExpanded({ ...expanded, [m.id]: !isExp }); }}
               >
-                <span>Hyperparameter</span>
+                <span>
+                  Hyperparameter
+                  <span className="hp-count">{(m.params || []).length}</span>
+                  {changed.length > 0 && <span className="hp-changed">{changed.length} diubah</span>}
+                </span>
                 <span className="coll-chev"><Icon.Chev /></span>
               </div>
               {isExp && (
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }} onClick={e => e.stopPropagation()}>
+                <div className="hp-panel" onClick={e => e.stopPropagation()}>
                   <HyperEditor model={m} value={hyper} onChange={(h) => setHyper(m.id, h)} />
+                  {changed.length > 0 && (
+                    <button type="button" className="btn-ghost hp-reset-all"
+                      onClick={e => { e.stopPropagation(); setHyper(m.id, modelDefaults(m)); }}>
+                      <Icon.Refresh /> Kembalikan semua ke default
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -227,7 +370,7 @@ function StageTrain({ onBack, onNext, dataset, target, featureCols, missingStrat
         class_weight_balanced: !!classWeightBalanced,
         models: selected.map(id => {
           const m = MODELS.find(x => x.id === id);
-          return { id, hyper: hyperOverrides[id] || m?.defaults || {} };
+          return { id, hyper: hyperOverrides[id] || modelDefaults(m) };
         }),
       };
       // Progres nyata dari backend: bar = model ke-i / N, log per model.

@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, ColumnSelect, FeaturePicker, DataPreview */
 const { useState: useStateML, useRef: useRefML, useEffect: useEffectML } = React;
 const ApiML = window.Api;
 
@@ -38,13 +38,23 @@ function _formatSizeML(bytes) {
 }
 
 // ===================== STAGE 1: UPLOAD =====================
+const _GROUP_COL_RE = /subject|participant|patient|group.?id|subjek|pasien/i;
+
+/** Kolom yang masuk akal jadi label klasifikasi: sedikit kelas, tidak konstan. */
+function _targetHint(c) {
+  const n = c.n_unique ?? 0;
+  if (n < 2) return null;
+  if (n === 2) return 'biner';
+  if (n <= 10 && !c.is_numeric) return 'cocok jadi target';
+  return null;
+}
+
 function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCols, setFeatureCols, groupCol, setGroupCol }) {
   const [uploading, setUploading] = useStateML(false);
   const [error, setError] = useStateML(null);
   const [rawFile, setRawFile] = useStateML(null);
+  const [dragging, setDragging] = useStateML(false);
   const fileInputRef = useRefML(null);
-
-  const _looksLikeGroupCol = (name) => /subject|participant|patient|group.?id/i.test(name);
 
   const handleFile = async (f) => {
     if (!f) return;
@@ -67,198 +77,232 @@ function StageUpload({ onNext, dataset, setDataset, target, setTarget, featureCo
     }
   };
 
+  const clearDataset = () => {
+    setDataset(null); setRawFile(null); setTarget(''); setFeatureCols([]); setGroupCol('');
+  };
+
   const onDrop = (e) => {
     e.preventDefault();
+    setDragging(false);
     const f = e.dataTransfer.files?.[0];
     if (f) handleFile(f);
   };
 
-  const allFeatureCols = (dataset?.columns || [])
-    .filter(c => c.is_numeric && c.name !== target && c.name !== groupCol)
-    .map(c => c.name);
-  const groupColOptions = (dataset?.columns || []).filter(c => c.name !== target);
-  const suggestedGroupCol = !groupCol && groupColOptions.find(c => _looksLikeGroupCol(c.name));
+  const allCols = dataset?.columns || [];
+  const featureOptions = allCols.filter(c => c.is_numeric && c.name !== target && c.name !== groupCol);
+  const groupColOptions = allCols.filter(c => c.name !== target);
+  const suggestedGroupCol = !groupCol && groupColOptions.find(c => _GROUP_COL_RE.test(c.name));
+
+  // Target/group bisa berubah setelah fitur dipilih; buang dari daftar fitur
+  // supaya kolom label tidak ikut kelatih (kebocoran) tanpa user sadar.
+  useEffectML(() => {
+    const valid = new Set(featureOptions.map(c => c.name));
+    const pruned = featureCols.filter(n => valid.has(n));
+    if (pruned.length !== featureCols.length) setFeatureCols(pruned);
+  }, [target, groupCol, dataset]);
+
+  const targetCol = allCols.find(c => c.name === target);
+  const nNumeric = allCols.filter(c => c.is_numeric).length;
+  const missingCells = allCols.reduce((s, c) => s + (c.n_missing || 0), 0);
+
+  const blockers = [];
+  if (!dataset) blockers.push('upload dataset');
+  else {
+    if (!target) blockers.push('pilih kolom target');
+    else if ((targetCol?.n_unique ?? 0) < 2) blockers.push('target cuma punya 1 nilai unik');
+    if (featureCols.length === 0) blockers.push('pilih minimal 1 kolom fitur');
+  }
+  const ready = blockers.length === 0;
 
   return (
     <main data-screen-label="05 ML — Upload">
-      <div className="card card-pad-lg">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32 }}>
-          <div>
-            <div className="eyebrow mb-12">STEP 01 — UPLOAD</div>
-            <h3 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em' }}>Upload Data Fitur</h3>
-            <p style={{ margin: '0 0 20px', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.55 }}>
-              Upload file CSV atau Excel hasil ekstraksi fitur EEG dari modul Single File atau Batch.
-            </p>
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
-            {dataset ? (
-              <div className="file-card">
-                <div className="file-card-badge"><Icon.Spreadsheet /></div>
-                <div className="file-card-info">
-                  <div className="name">{dataset.filename}</div>
-                  <div className="meta">{dataset.n_rows.toLocaleString()} rows × {dataset.n_cols} cols{rawFile ? ` · ${_formatSizeML(rawFile.size)}` : ''}</div>
+      <div className="up-grid">
+        <div className="card card-pad-lg">
+          <div className="eyebrow mb-12">STEP 01 — UPLOAD</div>
+          <h3 className="sec-title">Upload Data Fitur</h3>
+          <p className="sec-sub">
+            File CSV atau Excel hasil ekstraksi fitur EEG dari modul Single File atau Batch.
+            Satu baris = satu sampel, satu kolom = satu fitur.
+          </p>
+          <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }}
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
+          {dataset ? (
+            <div className="file-card">
+              <div className="file-card-badge"><Icon.Spreadsheet /></div>
+              <div className="file-card-info">
+                <div className="name">{dataset.filename}</div>
+                <div className="meta">
+                  {dataset.n_rows.toLocaleString()} baris × {dataset.n_cols} kolom
+                  {rawFile ? ` · ${_formatSizeML(rawFile.size)}` : ''}
                 </div>
-                <button className="file-card-x" onClick={() => { setDataset(null); setRawFile(null); setTarget(''); setFeatureCols([]); setGroupCol(''); }}><Icon.X /></button>
               </div>
-            ) : (
-              <div className="dropzone"
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={e => e.preventDefault()}
-                onDrop={onDrop}>
-                <div className="dz-icon"><Icon.Spreadsheet /></div>
-                <div className="dz-title">Drag &amp; drop file CSV atau Excel</div>
-                <div className="dz-sub">atau klik untuk pilih file</div>
-                <div className="dz-hint">Format: .csv .xlsx — max 50 MB</div>
-              </div>
-            )}
-            {uploading && (
-              <div className="row gap-8" style={{ marginTop: 10, background: 'var(--accent-tint)', padding: '8px 14px', borderRadius: 999, fontSize: 12.5, color: 'var(--accent)', fontWeight: 500 }}>
-                <span className="loading-dot" />
-                Memuat dataset...
-              </div>
-            )}
-            {error && (
-              <div style={{ marginTop: 10, padding: '10px 14px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 12 }}>
-                {error}
-              </div>
-            )}
-          </div>
+              <button className="btn-ghost" onClick={() => fileInputRef.current?.click()}>Ganti file</button>
+              <button className="file-card-x" title="Hapus dataset" onClick={clearDataset}><Icon.X /></button>
+            </div>
+          ) : (
+            <div className={`dropzone ${dragging ? 'dragover' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}>
+              <div className="dz-icon"><Icon.Spreadsheet /></div>
+              <div className="dz-title">Drag &amp; drop file CSV atau Excel</div>
+              <div className="dz-sub">atau klik untuk pilih file</div>
+              <div className="dz-hint">Format: .csv .xlsx .xls — maks 50 MB</div>
+            </div>
+          )}
+          {uploading && (
+            <div className="up-status loading"><span className="loading-dot" /> Memuat &amp; menganalisis kolom...</div>
+          )}
+          {error && (
+            <div className="up-status error"><Icon.Info /> <span>{error}</span></div>
+          )}
+        </div>
 
-          <div>
-            <div className="eyebrow mb-12">KONFIGURASI KOLOM</div>
-            <h3 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em' }}>Pilih Target &amp; Fitur</h3>
+        <div className="card card-pad-lg">
+          <div className="eyebrow mb-12">RINGKASAN DATASET</div>
+          {dataset ? (
+            <>
+              <div className="ds-stats">
+                <div className="ds-stat"><span className="k">Baris</span><span className="v">{dataset.n_rows.toLocaleString()}</span></div>
+                <div className="ds-stat"><span className="k">Kolom</span><span className="v">{dataset.n_cols}</span></div>
+                <div className="ds-stat"><span className="k">Numerik</span><span className="v">{nNumeric}</span></div>
+                <div className="ds-stat"><span className="k">Non-numerik</span><span className="v">{dataset.n_cols - nNumeric}</span></div>
+              </div>
+              <div className={`ds-note ${missingCells > 0 ? 'warn' : 'ok'}`}>
+                <Icon.Info />
+                <span>{missingCells > 0
+                  ? `${missingCells.toLocaleString()} sel kosong terdeteksi — cara mengisinya diatur di Step 02.`
+                  : 'Tidak ada sel kosong terdeteksi.'}</span>
+              </div>
+              {targetCol && (
+                <div className="ds-classes">
+                  <div className="ds-classes-head">Distribusi <span className="mono">{targetCol.name}</span></div>
+                  {(targetCol.top_values || []).length === 0 && (
+                    <div className="ds-note"><Icon.Info /> <span>{targetCol.n_unique.toLocaleString()} nilai unik — terlalu banyak buat jadi label klasifikasi.</span></div>
+                  )}
+                  {(targetCol.top_values || []).map(tv => {
+                    const pct = dataset.n_rows ? (tv.count / dataset.n_rows) * 100 : 0;
+                    return (
+                      <div className="ds-class" key={tv.value}>
+                        <div className="ds-class-head">
+                          <span className="ds-class-name">{tv.value}</span>
+                          <span className="ds-class-num">{tv.count.toLocaleString()} · {pct.toFixed(1)}%</span>
+                        </div>
+                        <div className="ds-bar"><i style={{ width: `${Math.max(2, pct)}%` }} /></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="ds-placeholder">
+              <Icon.Database />
+              <p>Statistik dataset (jumlah baris, kolom numerik, sel kosong, distribusi kelas) muncul di sini setelah file diupload.</p>
+            </div>
+          )}
+        </div>
+      </div>
 
-            <div className="sub-card mb-12">
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Kolom Target (Label)</div>
-              <select value={target} onChange={e => setTarget(e.target.value)}
-                disabled={!dataset}
-                style={{ width: '100%', padding: '12px 16px', background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>
-                <option value="">— pilih kolom —</option>
-                {(dataset?.columns || []).map(c => (
-                  <option key={c.name} value={c.name}>{c.name} ({c.dtype}, unique={c.n_unique})</option>
-                ))}
-              </select>
-              {target && (
-                <div style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--accent-tint)', color: 'var(--accent)', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
-                  <span style={{ display: 'inline-flex', width: 14, height: 14 }}><Icon.Info /></span> Kolom ini akan dijadikan label klasifikasi
+      <div className="card card-pad-lg mt-16">
+        <div className="eyebrow mb-12">KONFIGURASI KOLOM</div>
+        <h3 className="sec-title">Pilih Target &amp; Fitur</h3>
+        <p className="sec-sub">Tentukan kolom mana yang jadi label, mana yang jadi input model, dan (opsional) kolom ID subjek.</p>
+
+        <div className="cfg-grid">
+          <div className="cfg-col">
+            <div className="field">
+              <div className="field-head">
+                <label>Kolom Target (Label)</label>
+                <span className="field-req">wajib</span>
+              </div>
+              <ColumnSelect columns={allCols} value={target} onChange={setTarget} disabled={!dataset}
+                recommend={_targetHint} />
+              {targetCol && (targetCol.top_values || []).length > 0 && (
+                <div className="field-chips">
+                  {targetCol.top_values.map(tv => (
+                    <span className="value-chip" key={tv.value}>{tv.value}<i>{tv.count.toLocaleString()}</i></span>
+                  ))}
+                  {targetCol.n_unique > targetCol.top_values.length && (
+                    <span className="value-chip muted">+{targetCol.n_unique - targetCol.top_values.length} lainnya</span>
+                  )}
+                </div>
+              )}
+              {targetCol && targetCol.n_unique > 10 && (
+                <div className="field-warn">
+                  <Icon.Info />
+                  <span>{targetCol.n_unique.toLocaleString()} nilai berbeda — kolom ini kemungkinan bukan label.
+                  Pilih kolom dengan sedikit kategori (mis. ALS vs Normal).</span>
+                </div>
+              )}
+              {targetCol && targetCol.n_missing > 0 && (
+                <div className="field-warn">
+                  <Icon.Info />
+                  <span>{targetCol.n_missing.toLocaleString()} baris tidak punya label; baris itu dibuang saat training.</span>
                 </div>
               )}
             </div>
 
-            <div className="sub-card mb-12">
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Group Column (opsional)</div>
-              <select value={groupCol} onChange={e => setGroupCol(e.target.value)}
-                disabled={!dataset}
-                style={{ width: '100%', padding: '12px 16px', background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>
-                <option value="">— tidak ada —</option>
-                {groupColOptions.map(c => (
-                  <option key={c.name} value={c.name}>{c.name} ({c.dtype}, unique={c.n_unique})</option>
-                ))}
-              </select>
-              <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                Kalau dataset ini punya banyak baris per subjek (mis. per channel/subband/chunk),
-                pilih kolom ID subjek di sini. Split train/test akan jaga supaya subjek yang sama
-                tidak pernah nyebrang ke dua-duanya sekaligus (mencegah akurasi bohong).
+            <div className="field">
+              <div className="field-head">
+                <label>Group Column (ID subjek)</label>
+                <span className="field-opt">opsional</span>
+              </div>
+              <ColumnSelect columns={groupColOptions} value={groupCol} onChange={setGroupCol} disabled={!dataset}
+                emptyLabel="— tidak ada —" placeholder="— tidak ada —"
+                recommend={c => (_GROUP_COL_RE.test(c.name) ? 'mirip ID subjek' : null)} />
+              <p className="field-help">
+                Kalau satu subjek punya banyak baris (per channel/subband/chunk), pilih kolom ID subjeknya.
+                Split train/test jadi group-aware: subjek yang sama tidak muncul di dua sisi sekaligus,
+                jadi akurasinya tidak palsu.
               </p>
               {groupCol && (
-                <div style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--accent-tint)', color: 'var(--accent)', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
-                  <Icon.Info /> Split akan group-aware berdasarkan kolom ini
+                <div className="field-ok">
+                  <Icon.Check /> <span>Split group-aware pakai kolom <span className="mono">{groupCol}</span>.</span>
                 </div>
               )}
               {suggestedGroupCol && (
-                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--danger-tint)', color: 'var(--danger)', borderRadius: 12, fontSize: 11.5, lineHeight: 1.5 }}>
-                  <Icon.Info /> Kolom "{suggestedGroupCol.name}" terlihat seperti ID subjek tapi belum
-                  dipilih sebagai Group Column. Kalau ini benar ID subjek, pilih di atas biar split
-                  train/test tidak bocor.
+                <div className="field-warn">
+                  <Icon.Info />
+                  <span>Kolom <span className="mono">{suggestedGroupCol.name}</span> terlihat seperti ID subjek tapi belum dipilih.</span>
+                  <button className="btn-ghost-accent" onClick={() => setGroupCol(suggestedGroupCol.name)}>Pakai ini</button>
                 </div>
               )}
             </div>
+          </div>
 
-            <div className="sub-card">
-              <div className="row-between mb-12">
-                <span style={{ fontSize: 12, fontWeight: 600 }}>Kolom Fitur (numerik)</span>
-                <span className="chip-mini">{featureCols.length} / {allFeatureCols.length} dipilih</span>
+          <div className="cfg-col">
+            <div className="field field-grow">
+              <div className="field-head">
+                <label>Kolom Fitur (numerik)</label>
+                <span className="chip-mini accent">{featureCols.length} / {featureOptions.length} dipilih</span>
               </div>
-              <div className="row gap-8 mb-12">
-                <button className="btn-ghost-accent" onClick={() => setFeatureCols([...allFeatureCols])} disabled={!dataset}>Pilih Semua</button>
-                <button className="btn-ghost" onClick={() => setFeatureCols([])} disabled={!dataset}>Hapus Semua</button>
-              </div>
-              <div className="chip-group" style={{ maxHeight: 240, overflowY: 'auto' }}>
-                {allFeatureCols.length === 0 ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{dataset ? 'Tidak ada kolom numerik selain target' : 'Upload dataset dulu'}</span>
-                ) : allFeatureCols.map(f => {
-                  const sel = featureCols.includes(f);
-                  return (
-                    <button key={f}
-                      className={`chip ${sel ? 'selected' : ''}`}
-                      style={{ fontSize: 11.5, padding: '5px 12px', height: 28, fontFamily: 'JetBrains Mono, monospace' }}
-                      onClick={() => setFeatureCols(sel ? featureCols.filter(x => x !== f) : [...featureCols, f])}>
-                      {f}
-                    </button>
-                  );
-                })}
-              </div>
+              <FeaturePicker columns={featureOptions} selected={featureCols} onChange={setFeatureCols} disabled={!dataset} />
             </div>
           </div>
         </div>
+      </div>
 
-        {dataset && (
-          <>
-            <div className="card-divider" />
-            <div className="row-between mb-16">
-              <div>
-                <div className="eyebrow">DATA PREVIEW</div>
-                <h3 style={{ margin: '6px 0 0', fontSize: 18, fontWeight: 600 }}>Preview Data ({Math.min(20, dataset.preview.length)} dari {dataset.n_rows.toLocaleString()})</h3>
-              </div>
-            </div>
-            <PreviewTable dataset={dataset} target={target} />
+      {dataset && (
+        <div className="card card-pad-lg mt-16">
+          <div className="eyebrow mb-12">DATA PREVIEW</div>
+          <h3 className="sec-title">Preview Data</h3>
+          <DataPreview dataset={dataset} target={target} groupCol={groupCol} featureCols={featureCols} />
+        </div>
+      )}
 
-            <div className="card-divider" />
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button className="btn btn-primary" onClick={onNext} disabled={!target || featureCols.length === 0}>
-                Lanjut ke Preprocessing <Icon.Arrow />
-              </button>
-            </div>
-          </>
-        )}
+      <div className="stage-nav">
+        <div className={`stage-ready ${ready ? 'ok' : ''}`}>
+          {ready
+            ? <><Icon.Check /> <span>Siap — target <span className="mono">{target}</span>, {featureCols.length} kolom fitur.</span></>
+            : <><Icon.Info /> <span>Belum siap: {blockers.join(', ')}.</span></>}
+        </div>
+        <button className="btn btn-primary" onClick={onNext} disabled={!ready}>
+          Lanjut ke Preprocessing <Icon.Arrow />
+        </button>
       </div>
     </main>
-  );
-}
-
-function PreviewTable({ dataset, target }) {
-  const cols = dataset.columns.map(c => c.name);
-  const rows = dataset.preview;
-  return (
-    <div className="table-wrap" style={{ overflowX: 'auto' }}>
-      <table className="dt">
-        <thead><tr>
-          <th>#</th>
-          {cols.map(c => (
-            <th key={c} className={c === target ? '' : 'num'}
-              style={c === target ? { background: 'var(--accent-tint)', color: 'var(--accent)' } : {}}>
-              {c}{c === target ? ' (target)' : ''}
-            </th>
-          ))}
-        </tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>{i + 1}</td>
-              {cols.map(c => {
-                const v = r[c];
-                const isTarget = c === target;
-                if (isTarget) {
-                  const cls = v === 'ALS' ? 'badge-als' : v === 'Normal' ? 'badge-normal' : 'badge-accent';
-                  return <td key={c}><span className={`badge ${cls}`}>{v}</span></td>;
-                }
-                return <td key={c} className="num">{v}</td>;
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 

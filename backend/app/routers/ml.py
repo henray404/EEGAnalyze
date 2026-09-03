@@ -29,7 +29,10 @@ from sklearn.model_selection import (
 )
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier, HistGradientBoostingClassifier, ExtraTreesClassifier,
+)
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
@@ -54,14 +57,41 @@ def _build_estimator(model_id: str, hyper: Dict[str, Any], class_weight_balanced
         return SVC(
             kernel=hyper.get("kernel", "rbf"),
             C=float(hyper.get("C", 1.0)),
+            gamma=hyper.get("gamma", "scale"),
             probability=True,
             class_weight=cw,
             random_state=42,
         )
+    if model_id == "hgb":
+        # class_weight didukung sejak sklearn 1.7; di versi lama argumennya
+        # ditolak, jadi dikirim hanya kalau memang diminta.
+        extra = {"class_weight": cw} if cw else {}
+        try:
+            return HistGradientBoostingClassifier(
+                learning_rate=float(hyper.get("learning_rate", 0.1)),
+                max_iter=int(hyper.get("max_iter", 200)),
+                max_depth=int(hyper.get("max_depth", 6)),
+                min_samples_leaf=int(hyper.get("min_samples_leaf", 20)),
+                l2_regularization=float(hyper.get("l2_regularization", 0.0)),
+                random_state=42,
+                **extra,
+            )
+        except TypeError:
+            logger.warning("HistGradientBoosting tanpa class_weight (sklearn lama)")
+            return HistGradientBoostingClassifier(
+                learning_rate=float(hyper.get("learning_rate", 0.1)),
+                max_iter=int(hyper.get("max_iter", 200)),
+                max_depth=int(hyper.get("max_depth", 6)),
+                min_samples_leaf=int(hyper.get("min_samples_leaf", 20)),
+                l2_regularization=float(hyper.get("l2_regularization", 0.0)),
+                random_state=42,
+            )
     if model_id == "rf":
         return RandomForestClassifier(
             n_estimators=int(hyper.get("n_estimators", 100)),
             max_depth=int(hyper.get("max_depth", 10)),
+            min_samples_leaf=int(hyper.get("min_samples_leaf", 1)),
+            max_features=hyper.get("max_features", "sqrt"),
             class_weight=cw,
             random_state=42, n_jobs=-1,
         )
@@ -70,17 +100,35 @@ def _build_estimator(model_id: str, hyper: Dict[str, Any], class_weight_balanced
         return KNeighborsClassifier(
             n_neighbors=int(hyper.get("n_neighbors", 5)),
             metric=hyper.get("metric", "euclidean"),
+            weights=hyper.get("weights", "uniform"),
         )
     if model_id == "lr":
         return LogisticRegression(
             C=float(hyper.get("C", 1.0)),
             solver=hyper.get("solver", "lbfgs"),
             class_weight=cw,
-            max_iter=1000, random_state=42,
+            max_iter=int(hyper.get("max_iter", 1000)), random_state=42,
+        )
+    if model_id == "et":
+        return ExtraTreesClassifier(
+            n_estimators=int(hyper.get("n_estimators", 200)),
+            max_depth=int(hyper.get("max_depth", 12)),
+            min_samples_leaf=int(hyper.get("min_samples_leaf", 1)),
+            max_features=hyper.get("max_features", "sqrt"),
+            class_weight=cw,
+            random_state=42, n_jobs=-1,
+        )
+    if model_id == "dt":
+        return DecisionTreeClassifier(
+            criterion=hyper.get("criterion", "gini"),
+            max_depth=int(hyper.get("max_depth", 6)),
+            min_samples_leaf=int(hyper.get("min_samples_leaf", 5)),
+            class_weight=cw,
+            random_state=42,
         )
     if model_id == "nb":
         # GaussianNB tidak dukung class_weight (probabilistik murni dari data).
-        return GaussianNB()
+        return GaussianNB(var_smoothing=float(hyper.get("var_smoothing", 1e-9)))
     raise ValueError(f"Unknown model id: {model_id}")
 
 
@@ -105,6 +153,9 @@ def _model_display_name(model_id: str) -> str:
         "knn": "K-Nearest Neighbors",
         "lr": "Logistic Regression",
         "nb": "Naive Bayes",
+        "hgb": "Hist Gradient Boosting",
+        "et": "Extra Trees",
+        "dt": "Decision Tree",
     }.get(model_id, model_id)
 
 
@@ -192,6 +243,75 @@ def _feature_importance_fig(features: list, importances: list) -> dict:
 
 
 # ============================================================== #
+#  Profil kolom (dipakai UI Step 01 buat dropdown target/fitur)   #
+# ============================================================== #
+
+_MAX_SAMPLE_VALUES = 4
+
+
+def _fnum(x) -> Optional[float]:
+    """float() yang aman buat JSON: NaN/Inf/gagal-cast -> None."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) else None
+
+
+def _column_kind(s: pd.Series) -> str:
+    """Kategori kasar buat badge tipe di UI, bukan dtype mentah pandas."""
+    if pd.api.types.is_bool_dtype(s):
+        return "boolean"
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return "datetime"
+    if pd.api.types.is_numeric_dtype(s):
+        return "numeric"
+    return "categorical"
+
+
+def _column_profile(s: pd.Series, name: str, n_rows: int) -> Dict[str, Any]:
+    """Ringkas satu kolom: tipe, keunikan, missing, contoh nilai, rentang.
+
+    Dipakai frontend buat nampilin detail di dropdown target/group dan
+    daftar fitur, jadi user tidak perlu nebak isi kolom dari namanya saja.
+    """
+    kind = _column_kind(s)
+    n_missing = int(s.isna().sum())
+    n_unique = int(s.nunique(dropna=True))
+    info: Dict[str, Any] = {
+        "name": str(name),
+        "dtype": str(s.dtype),
+        "kind": kind,
+        "is_numeric": kind == "numeric",
+        "n_unique": n_unique,
+        "n_missing": n_missing,
+        "missing_pct": round(n_missing / n_rows * 100, 2) if n_rows else 0.0,
+    }
+
+    # Contoh nilai: kategorikal pakai yang paling sering (plus jumlahnya),
+    # numerik cukup beberapa nilai non-null pertama.
+    if kind in ("categorical", "boolean") or n_unique <= _MAX_SAMPLE_VALUES:
+        vc = s.value_counts(dropna=True).head(_MAX_SAMPLE_VALUES)
+        info["top_values"] = [
+            {"value": str(v), "count": int(c)} for v, c in vc.items()
+        ]
+        info["sample_values"] = [str(v) for v in vc.index]
+    else:
+        info["top_values"] = []
+        info["sample_values"] = [
+            str(v) for v in s.dropna().head(_MAX_SAMPLE_VALUES).tolist()
+        ]
+
+    if kind == "numeric":
+        info["min"] = _fnum(s.min())
+        info["max"] = _fnum(s.max())
+        info["mean"] = _fnum(s.mean())
+        info["std"] = _fnum(s.std())
+
+    return info
+
+
+# ============================================================== #
 #  POST /upload                                                   #
 # ============================================================== #
 
@@ -217,15 +337,7 @@ async def ml_upload(file: UploadFile = File(...)):
         dataset_id = str(uuid.uuid4())
         _DATASETS[dataset_id] = df
 
-        columns_info = []
-        for col in df.columns:
-            columns_info.append({
-                "name": col,
-                "dtype": str(df[col].dtype),
-                "is_numeric": pd.api.types.is_numeric_dtype(df[col]),
-                "n_unique": int(df[col].nunique(dropna=True)),
-                "n_missing": int(df[col].isna().sum()),
-            })
+        columns_info = [_column_profile(df[col], col, len(df)) for col in df.columns]
 
         preview = df.head(20).fillna("").astype(str).to_dict(orient="records")
         emit.log("Analisis kolom selesai")
@@ -491,7 +603,9 @@ def _train_impl(req: TrainRequest, emit):
         cm_fig = _confusion_matrix_fig(cm, label_names, name)
 
         feat_imp = None
-        if spec.id == "rf" and hasattr(estimator, "feature_importances_"):
+        # Dulu dikunci ke spec.id == "rf"; Extra Trees dan Decision Tree juga
+        # mengekspos feature_importances_, jadi cukup cek atributnya.
+        if hasattr(estimator, "feature_importances_"):
             feat_imp = _feature_importance_fig(
                 req.feature_cols,
                 estimator.feature_importances_.tolist(),
